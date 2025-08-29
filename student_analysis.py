@@ -303,4 +303,3 @@ def save_full_report_excel_bytes(df):
 
     output.seek(0)
     return output.getvalue()
-
