@@ -4,9 +4,9 @@ import numpy as np
 from io import BytesIO
 
 SUBJECT_CODE_MAP = {
-    "184": "English", "085": "Hindi", "089": "Telugu", "018": "Telugu",
-    "041": "Maths", "086": "Science", "087": "Social", "049": "Painting",
-    "165": "Hindi(B)", "241": "Maths(B)", "002": "Hindi",
+    "184": "English", "085": "Hindi(B)", "089": "Telugu", "018": "French",
+    "041": "Maths(STD)", "086": "Science", "087": "Social", "049": "Painting",
+    "165": "Computer Applications", "002": "Hindi(A)", 
 }
 
 GRADE_ORDER = ["A1","A2","B1","B2","C1","C2","D1","D2","E1","E2","F"]
