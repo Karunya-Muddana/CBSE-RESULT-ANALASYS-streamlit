@@ -4,6 +4,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import re
 import student_analysis as sa
+from pathlib import Path
 
 st.set_page_config(
     page_title="CBSE Result Analysis",
@@ -24,15 +25,16 @@ def grade_palette(grades):
 
 SUBJECTS    = sa.SUBJECTS
 SUBJ_LABELS = sa.SUBJ_LABELS
+SEAL_PATH   = Path(__file__).with_name("Quality_verified_seal_design-removebg-preview.png")
 
 # ══════════════════════════════════════════════════════════════════════════════
 # SIDEBAR
 # ══════════════════════════════════════════════════════════════════════════════
 with st.sidebar:
     st.title("🎓 CBSE Analyser")
-    st.subheader("A QUALITY PRODUCT BY \nKARUNYA MUDDANA")
-    st.image("Quality_verified_seal_design-removebg-preview.png", use_column_width=True, caption="Trusted by 100+ schools across India")
-    st.divider()
+    st.caption("Prepared by Karunya Muddana")
+    if SEAL_PATH.exists():
+        st.image(str(SEAL_PATH), width=120)
     uploaded = st.file_uploader("Upload Gazette (.txt)", type=["txt"])
     st.divider()
     st.subheader("Display Options")
