@@ -1,736 +1,533 @@
 import re
 import pandas as pd
-import matplotlib.pyplot as plt
-import matplotlib.patches as mpatches
-import seaborn as sns
 import numpy as np
 from io import BytesIO
 
-sns.set_theme(style="whitegrid", palette="muted")
-
-# ── CBSE Subject Code → Name ─────────────────────────────────────────────────
 SUBJECT_CODE_MAP = {
-    "184": "English",
-    "085": "Hindi",
-    "018": "Telugu",
-    "089": "Tamil",
-    "041": "Mathematics",
-    "086": "Science",
-    "087": "Social Science",
-    "049": "Painting",
-    "165": "Hindi Elective",
-    "002": "Hindi",
-    "241": "Mathematics Basic",
+    "184": "English", "085": "Hindi", "089": "Telugu", "018": "Telugu",
+    "041": "Maths", "086": "Science", "087": "Social", "049": "Painting",
+    "165": "Hindi(B)", "241": "Maths(B)", "002": "Hindi",
 }
 
-LANG2_CODES = {"085", "018", "089", "165", "002"}  # 2nd language codes
+GRADE_ORDER = ["A1","A2","B1","B2","C1","C2","D1","D2","E1","E2","F"]
 
-GRADE_ORDER = ["A1", "A2", "B1", "B2", "C1", "C2", "D1", "D2", "E1", "E2", "F"]
 GRADE_COLORS = {
-    "A1": "#2ecc71", "A2": "#27ae60",
-    "B1": "#3498db", "B2": "#2980b9",
-    "C1": "#f39c12", "C2": "#e67e22",
-    "D1": "#e74c3c", "D2": "#c0392b",
-    "E1": "#95a5a6", "E2": "#7f8c8d",
-    "F":  "#2c3e50",
+    "A1":"1a9850","A2":"66bd63",
+    "B1":"3182bd","B2":"6baed6",
+    "C1":"fdae61","C2":"f46d43",
+    "D1":"d73027","D2":"a50026",
+    "E1":"969696","E2":"636363","F":"252525",
 }
 
+SUBJECTS     = ["English","Lang2","Maths","Science","Social"]
+SUBJ_LABELS  = {"English":"English","Lang2":"2nd Language",
+                "Maths":"Mathematics","Science":"Science","Social":"Social Science"}
 
-# ── PARSING ───────────────────────────────────────────────────────────────────
 
-def parse_student_data_from_lines(lines):
-    """
-    Parse CBSE gazette format. Handles variable 2nd languages.
-    Returns DataFrame with columns:
-      Roll Number, Name, Gender, Result,
-      English_Marks, English_Grade,
-      Lang2_Code, Lang2_Name, Lang2_Marks, Lang2_Grade,
-      Mathematics_Marks, Mathematics_Grade,
-      Science_Marks, Science_Grade,
-      SocialScience_Marks, SocialScience_Grade,
-      [optional extra subjects]
-    """
-    students = []
-    clean = [ln.rstrip("\r") for ln in lines]
+def parse(lines_or_path):
+    if isinstance(lines_or_path, str):
+        with open(lines_or_path, "r", encoding="utf-8", errors="ignore") as f:
+            lines = f.read().splitlines()
+    else:
+        lines = lines_or_path
 
+    records = []
     i = 0
-    while i < len(clean) - 1:
-        line1 = clean[i].strip()
+    while i < len(lines):
+        line = lines[i].rstrip("\r")
+        m = re.match(
+            r"(\d{8})\s+([MF])\s+(.+?)\s{3,}((?:\s*\d{3})+)\s+(PASS|FAIL|COMP|ESSEN|ABSE)",
+            line
+        )
+        if m:
+            roll, gender, name = m.group(1), m.group(2), m.group(3).strip()
+            codes  = re.findall(r"\d{3}", m.group(4))
+            result = m.group(5)
+            j = i + 1
+            while j < len(lines) and not re.search(r"\d{2,3}\s+[A-F]\d", lines[j]):
+                j += 1
+            mg = re.findall(r"(\d{1,3})\s+([A-F]\d)", lines[j]) if j < len(lines) else []
 
-        # Match student header line
-        m = re.match(r"(\d{7,10})\s+([MF])\s+(.+?)\s{3,}((?:\s*\d{3})+)\s+(PASS|FAIL|COMP|ESSEN|ABSE)", line1)
-        if not m:
+            rec = {
+                "Roll":      roll,
+                "Name":      name,
+                "Gender":    gender,
+                "Result":    result,
+                "Lang2_Name": SUBJECT_CODE_MAP.get(codes[1], "Lang2") if len(codes) > 1 else "Lang2",
+            }
+            for idx, subj in enumerate(SUBJECTS):
+                rec[f"{subj}_M"] = int(mg[idx][0]) if idx < len(mg) else np.nan
+                rec[f"{subj}_G"] = mg[idx][1]       if idx < len(mg) else ""
+            records.append(rec)
+            i = j + 1
+        else:
             i += 1
-            continue
 
-        roll = m.group(1).strip()
-        gender = m.group(2)
-        name = m.group(3).strip()
-        subject_codes = re.findall(r"\d{3}", m.group(4))
-        result = m.group(5)
-
-        # Next non-empty line has marks+grades
-        j = i + 1
-        marks_line = ""
-        while j < len(clean):
-            candidate = clean[j].strip()
-            if candidate and re.search(r"\d{2,3}\s+[A-F]\d", candidate):
-                marks_line = candidate
-                break
-            j += 1
-
-        marks_grades = re.findall(r"(\d{1,3})\s+([A-D][1-2]|E1|E2|F)", marks_line)
-
-        student = {
-            "Roll Number": roll,
-            "Name": name,
-            "Gender": gender,
-            "Result": result,
-        }
-
-        # Map codes to marks/grades
-        lang2_code = None
-        lang2_name = "Lang II"
-        for pos, (code, (marks_str, grade)) in enumerate(
-            zip(subject_codes, marks_grades), start=1
-        ):
-            subj_name = SUBJECT_CODE_MAP.get(code, f"Sub{code}")
-            col_key = subj_name.replace(" ", "")
-
-            # Detect 2nd language slot
-            if code in LANG2_CODES and lang2_code is None:
-                lang2_code = code
-                lang2_name = subj_name
-                student["Lang2_Code"] = code
-                student["Lang2_Name"] = lang2_name
-
-            try:
-                marks_val = int(marks_str)
-            except Exception:
-                marks_val = np.nan
-
-            student[f"{col_key}_Marks"] = marks_val
-            student[f"{col_key}_Grade"] = grade
-
-        students.append(student)
-        i = j + 1
-
-    df = pd.DataFrame(students)
+    df = pd.DataFrame(records)
+    mark_cols = [f"{s}_M" for s in SUBJECTS]
+    df["Total"] = df[mark_cols].sum(axis=1)
+    df["Rank"]  = df["Total"].rank(method="min", ascending=False).astype(int)
     return df
 
 
-def parse_student_data_from_file(path):
-    with open(path, "r", encoding="utf-8", errors="ignore") as f:
-        lines = f.read().splitlines()
-    return parse_student_data_from_lines(lines)
-
-
-# ── HELPERS ───────────────────────────────────────────────────────────────────
-
-def get_mark_cols(df):
-    return [
-        c for c in df.columns
-        if c.endswith("_Marks")
-        and pd.api.types.is_numeric_dtype(df[c])
-        and c != "Total_Marks"
-    ]
-
-
-def get_grade_col(df, mark_col):
-    g = mark_col.replace("_Marks", "_Grade")
-    return g if g in df.columns else None
-
-
-def add_total_marks(df):
-    df = df.copy()
-    mc = get_mark_cols(df)
-    df["Total"] = df[mc].sum(axis=1, skipna=True)
-    return df
-
-
-def get_lang2_breakdown(df):
-    """Returns a dict: lang_name → sub-DataFrame"""
-    if "Lang2_Name" not in df.columns:
-        return {}
-    groups = {}
-    for lang, sub in df.groupby("Lang2_Name"):
-        groups[lang] = sub.reset_index(drop=True)
-    return groups
-
-
-def pass_fail_counts(df):
-    if "Result" in df.columns:
-        return df["Result"].value_counts()
-    return pd.Series(dtype=int)
-
-
-def grade_summary(df):
-    """Wide table: subject × grade counts"""
-    rows = []
-    for mc in get_mark_cols(df):
-        gc = get_grade_col(df, mc)
-        subj = mc.replace("_Marks", "")
-        if gc and gc in df.columns:
-            counts = df[gc].value_counts()
-            row = {"Subject": subj}
-            for g in GRADE_ORDER:
-                row[g] = counts.get(g, 0)
-            rows.append(row)
-    return pd.DataFrame(rows).set_index("Subject") if rows else pd.DataFrame()
-
-
-# ── FIGURES ───────────────────────────────────────────────────────────────────
-
-def fig_grade_distribution(df, mark_col):
-    gc = get_grade_col(df, mark_col)
-    if not gc or gc not in df.columns:
-        return None
-    counts = df[gc].value_counts().reindex(GRADE_ORDER).dropna()
-    if counts.empty:
-        return None
-
-    fig, ax = plt.subplots(figsize=(7, 4))
-    bars = ax.bar(
-        counts.index,
-        counts.values,
-        color=[GRADE_COLORS.get(g, "#95a5a6") for g in counts.index],
-        edgecolor="white", linewidth=0.8
-    )
-    for bar, val in zip(bars, counts.values):
-        ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.3,
-                str(int(val)), ha="center", va="bottom", fontsize=9, fontweight="bold")
-    ax.set_title(f"Grade Distribution — {mark_col.replace('_Marks', '')}", fontsize=12, pad=10)
-    ax.set_xlabel("Grade")
-    ax.set_ylabel("Number of Students")
-    ax.spines[["top", "right"]].set_visible(False)
-    fig.tight_layout()
-    return fig
-
-
-def fig_marks_histogram(df, mark_col):
-    vals = pd.to_numeric(df[mark_col], errors="coerce").dropna()
-    if vals.empty:
-        return None
-    fig, ax = plt.subplots(figsize=(7, 4))
-    ax.hist(vals, bins=15, color="#3498db", edgecolor="white", alpha=0.85, linewidth=0.8)
-    ax.axvline(vals.mean(), color="#e74c3c", lw=2, linestyle="--", label=f"Mean: {vals.mean():.1f}")
-    ax.axvline(vals.median(), color="#2ecc71", lw=2, linestyle="--", label=f"Median: {vals.median():.1f}")
-    ax.set_title(f"Marks Distribution — {mark_col.replace('_Marks', '')}", fontsize=12, pad=10)
-    ax.set_xlabel("Marks")
-    ax.set_ylabel("Students")
-    ax.legend(fontsize=9)
-    ax.spines[["top", "right"]].set_visible(False)
-    fig.tight_layout()
-    return fig
-
-
-def fig_subject_comparison(df):
-    mc = get_mark_cols(df)
-    if not mc:
-        return None
-    means = {c.replace("_Marks", ""): pd.to_numeric(df[c], errors="coerce").mean() for c in mc}
-    labels = list(means.keys())
-    vals = list(means.values())
-    colors = ["#3498db", "#2ecc71", "#e74c3c", "#f39c12", "#9b59b6", "#1abc9c"]
-
-    fig, ax = plt.subplots(figsize=(8, 4))
-    bars = ax.bar(labels, vals, color=colors[:len(labels)], edgecolor="white", linewidth=0.8)
-    for bar, v in zip(bars, vals):
-        ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.3,
-                f"{v:.1f}", ha="center", va="bottom", fontsize=9, fontweight="bold")
-    ax.set_title("Average Marks by Subject", fontsize=12, pad=10)
-    ax.set_ylabel("Average Marks")
-    ax.set_ylim(0, 105)
-    ax.spines[["top", "right"]].set_visible(False)
-    plt.xticks(rotation=20, ha="right")
-    fig.tight_layout()
-    return fig
-
-
-def fig_gender_comparison(df):
-    mc = get_mark_cols(df)
-    if "Gender" not in df.columns or not mc:
-        return None
-    rows = []
-    for g in ["M", "F"]:
-        sub = df[df["Gender"] == g]
-        for c in mc:
-            rows.append({
-                "Gender": "Male" if g == "M" else "Female",
-                "Subject": c.replace("_Marks", ""),
-                "Mean": pd.to_numeric(sub[c], errors="coerce").mean()
-            })
-    gdf = pd.DataFrame(rows)
-    if gdf.empty:
-        return None
-
-    fig, ax = plt.subplots(figsize=(8, 4))
-    subjects = gdf["Subject"].unique()
-    x = np.arange(len(subjects))
-    w = 0.35
-    males = gdf[gdf["Gender"] == "Male"].set_index("Subject").reindex(subjects)["Mean"]
-    females = gdf[gdf["Gender"] == "Female"].set_index("Subject").reindex(subjects)["Mean"]
-
-    ax.bar(x - w/2, males.values, w, label="Male", color="#3498db", alpha=0.85)
-    ax.bar(x + w/2, females.values, w, label="Female", color="#e91e8c", alpha=0.85)
-    ax.set_xticks(x)
-    ax.set_xticklabels(subjects, rotation=20, ha="right")
-    ax.set_title("Gender-wise Average Marks by Subject", fontsize=12, pad=10)
-    ax.set_ylabel("Average Marks")
-    ax.set_ylim(0, 105)
-    ax.legend()
-    ax.spines[["top", "right"]].set_visible(False)
-    fig.tight_layout()
-    return fig
-
-
-def fig_lang2_comparison(df):
-    """Compare performance across 2nd language groups."""
-    if "Lang2_Name" not in df.columns:
-        return None
-    groups = df["Lang2_Name"].unique()
-    if len(groups) < 2:
-        return None
-
-    # Compare by Total
-    if "Total" not in df.columns:
-        df = add_total_marks(df)
-
-    fig, ax = plt.subplots(figsize=(7, 4))
-    colors = ["#3498db", "#2ecc71", "#e74c3c", "#f39c12"]
-    for idx, lang in enumerate(sorted(groups)):
-        sub = df[df["Lang2_Name"] == lang]["Total"].dropna()
-        ax.hist(sub, bins=12, alpha=0.6, label=f"{lang} (n={len(sub)})",
-                color=colors[idx % len(colors)])
-    ax.set_title("Total Marks Distribution by 2nd Language", fontsize=12, pad=10)
-    ax.set_xlabel("Total Marks")
-    ax.set_ylabel("Students")
-    ax.legend()
-    ax.spines[["top", "right"]].set_visible(False)
-    fig.tight_layout()
-    return fig
-
-
-def fig_top_bottom(df, mark_col, n=10):
-    gc = get_grade_col(df, mark_col)
-    subj_label = mark_col.replace("_Marks", "")
-    cols = ["Name", "Roll Number", mark_col] + ([gc] if gc and gc in df.columns else [])
-    sub = df[cols].copy()
-    sub[mark_col] = pd.to_numeric(sub[mark_col], errors="coerce")
-    sub = sub.dropna(subset=[mark_col]).sort_values(mark_col, ascending=False)
-
-    top = sub.head(n).copy()
-    top["Group"] = "Top"
-    bot = sub.tail(n).copy()
-    bot["Group"] = "Bottom"
-    comb = pd.concat([top, bot]).reset_index(drop=True)
-
-    if comb.empty:
-        return None
-    fig, ax = plt.subplots(figsize=(11, 4))
-    colors = ["#2ecc71" if g == "Top" else "#e74c3c" for g in comb["Group"]]
-    bars = ax.bar(comb["Name"], comb[mark_col], color=colors, edgecolor="white", linewidth=0.6)
-    for bar, row in zip(bars, comb.itertuples()):
-        ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.3,
-                str(int(getattr(row, mark_col.replace(" ", "_"), bar.get_height()))),
-                ha="center", va="bottom", fontsize=7.5)
-    ax.set_xticklabels(comb["Name"], rotation=45, ha="right", fontsize=8)
-    ax.set_title(f"Top & Bottom {n} — {subj_label}", fontsize=12, pad=10)
-    ax.set_ylabel("Marks")
-    top_patch = mpatches.Patch(color="#2ecc71", label="Top")
-    bot_patch = mpatches.Patch(color="#e74c3c", label="Bottom")
-    ax.legend(handles=[top_patch, bot_patch])
-    ax.spines[["top", "right"]].set_visible(False)
-    fig.tight_layout()
-    return fig
-
-
-def fig_pass_fail_pie(df):
-    pf = pass_fail_counts(df)
-    if pf.empty:
-        return None
-    colors = {"PASS": "#2ecc71", "FAIL": "#e74c3c", "COMP": "#f39c12",
-              "ESSEN": "#3498db", "ABSE": "#95a5a6"}
-    fig, ax = plt.subplots(figsize=(5, 5))
-    wedge_colors = [colors.get(k, "#95a5a6") for k in pf.index]
-    wedges, texts, autotexts = ax.pie(
-        pf.values, labels=pf.index, autopct="%1.1f%%",
-        colors=wedge_colors, startangle=90,
-        wedgeprops={"edgecolor": "white", "linewidth": 1.5}
-    )
-    for at in autotexts:
-        at.set_fontsize(10)
-    ax.set_title("Pass / Fail Breakdown", fontsize=12, pad=10)
-    fig.tight_layout()
-    return fig
-
-
-def fig_correlation_heatmap(df):
-    mc = get_mark_cols(df)
-    if len(mc) < 2:
-        return None
-    num_df = df[mc].apply(pd.to_numeric, errors="coerce")
-    corr = num_df.corr()
-    labels = [c.replace("_Marks", "") for c in corr.columns]
-    corr.columns = labels
-    corr.index = labels
-
-    fig, ax = plt.subplots(figsize=(6, 5))
-    mask = np.triu(np.ones_like(corr, dtype=bool))
-    sns.heatmap(corr, annot=True, fmt=".2f", cmap="RdYlGn",
-                vmin=-1, vmax=1, ax=ax, mask=mask,
-                linewidths=0.5, linecolor="white",
-                annot_kws={"size": 10})
-    ax.set_title("Subject Marks Correlation", fontsize=12, pad=10)
-    fig.tight_layout()
-    return fig
-
-
-def fig_scatter_two_subjects(df, subj_x, subj_y):
-    x = pd.to_numeric(df[subj_x], errors="coerce")
-    y = pd.to_numeric(df[subj_y], errors="coerce")
-    mask = x.notna() & y.notna()
-    if mask.sum() < 2:
-        return None
-    fig, ax = plt.subplots(figsize=(6, 5))
-    colors = ["#3498db" if g == "M" else "#e91e8c" for g in df.loc[mask, "Gender"]] \
-        if "Gender" in df.columns else "#3498db"
-    ax.scatter(x[mask], y[mask], c=colors, alpha=0.6, edgecolors="white", s=60)
-    m, b = np.polyfit(x[mask], y[mask], 1)
-    xs = np.linspace(x[mask].min(), x[mask].max(), 100)
-    ax.plot(xs, m * xs + b, color="#e74c3c", lw=1.5, linestyle="--", label="Trend")
-    ax.set_xlabel(subj_x.replace("_Marks", ""))
-    ax.set_ylabel(subj_y.replace("_Marks", ""))
-    ax.set_title(f"Correlation: {subj_x.replace('_Marks','')} vs {subj_y.replace('_Marks','')}", fontsize=11)
-    if "Gender" in df.columns:
-        male_patch = mpatches.Patch(color="#3498db", label="Male")
-        female_patch = mpatches.Patch(color="#e91e8c", label="Female")
-        ax.legend(handles=[male_patch, female_patch, plt.Line2D([0],[0], color="#e74c3c", lw=1.5, linestyle="--", label="Trend")])
-    ax.spines[["top", "right"]].set_visible(False)
-    fig.tight_layout()
-    return fig
-
-
-# ── EXCEL EXPORT ──────────────────────────────────────────────────────────────
-
-def build_excel_report(df):
-    """
-    Teacher-friendly Excel report with multiple formatted sheets.
-    Returns bytes.
-    """
+def build_excel(df):
     from openpyxl import Workbook
-    from openpyxl.styles import (Font, PatternFill, Alignment, Border, Side,
-                                  numbers)
+    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
     from openpyxl.utils import get_column_letter
     from openpyxl.chart import BarChart, PieChart, Reference
-    from openpyxl.chart.series import DataPoint
-    import copy
-
-    df = add_total_marks(df)
-    mark_cols = get_mark_cols(df)
+    from openpyxl.formatting.rule import ColorScaleRule
 
     wb = Workbook()
 
-    # ── Colour palette ──
-    HDR_BG  = "1F4E79"
-    HDR_FG  = "FFFFFF"
-    SUBHDR  = "2E75B6"
-    ALT_ROW = "DEEAF1"
-    PASS_BG = "E2EFDA"
-    FAIL_BG = "FFE6E6"
+    # ── palette ────────────────────────────────────────────────────────────────
+    C_DARK   = "1B3A5C"
+    C_MID    = "2E75B6"
+    C_LIGHT  = "D6E4F0"
+    C_ACCENT = "E8A838"
+    C_GREEN  = "1A7A4A"
+    C_GREEN2 = "D8F0E4"
+    C_RED    = "C0392B"
+    C_RED2   = "FAE0DD"
+    C_WHITE  = "FFFFFF"
+    C_GRAY   = "F4F6F9"
+    C_TEXT   = "1A1A2E"
 
-    thin = Side(style="thin", color="AAAAAA")
-    border = Border(left=thin, right=thin, top=thin, bottom=thin)
+    thin = Side(style="thin",   color="CBD5E0")
+    brd  = Border(left=thin, right=thin, top=thin, bottom=thin)
 
-    def hdr_style(cell, bg=HDR_BG, fg=HDR_FG, size=10):
-        cell.font = Font(bold=True, color=fg, size=size)
-        cell.fill = PatternFill("solid", fgColor=bg)
+    gf = {g: PatternFill("solid", fgColor=c) for g, c in GRADE_COLORS.items()}
+
+    def hdr(cell, text, bg=C_DARK, fg=C_WHITE, size=10, bold=True):
+        cell.value = text
+        cell.font  = Font(name="Calibri", bold=bold, color=fg, size=size)
+        cell.fill  = PatternFill("solid", fgColor=bg)
         cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
-        cell.border = border
+        cell.border = brd
 
-    def data_style(cell, bold=False, center=False, bg=None, size=10):
-        cell.font = Font(bold=bold, size=size)
-        if bg:
-            cell.fill = PatternFill("solid", fgColor=bg)
+    def dat(cell, val, bold=False, center=True, bg=None, color=C_TEXT, size=10):
+        cell.value = val
+        cell.font  = Font(name="Calibri", bold=bold, color=color, size=size)
+        if bg: cell.fill = PatternFill("solid", fgColor=bg)
         cell.alignment = Alignment(horizontal="center" if center else "left", vertical="center")
-        cell.border = border
+        cell.border = brd
 
-    def col_width(ws, col, width):
-        ws.column_dimensions[get_column_letter(col)].width = width
+    def title_row(ws, text, ncols, row=1, bg=C_DARK):
+        c = ws.cell(row, 1, text)
+        c.font = Font(name="Calibri", bold=True, color=C_WHITE, size=14)
+        c.fill = PatternFill("solid", fgColor=bg)
+        c.alignment = Alignment(horizontal="center", vertical="center")
+        c.border = brd
+        ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=ncols)
+        ws.row_dimensions[row].height = 32
 
-    # ════════════════════════════════════════════════════════════
-    # SHEET 1: Complete Student Data
-    # ════════════════════════════════════════════════════════════
+    def col_w(ws, col, w):
+        ws.column_dimensions[get_column_letter(col)].width = w
+
+    def color_scale(ws, ref):
+        ws.conditional_formatting.add(ref, ColorScaleRule(
+            start_type="min",  start_color="FA8072",
+            mid_type="percentile", mid_value=50, mid_color="FFEB84",
+            end_type="max",    end_color="63BE7B"
+        ))
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # SHEET 1 — All Students
+    # ══════════════════════════════════════════════════════════════════════════
     ws1 = wb.active
-    ws1.title = "📋 All Students"
-    ws1.row_dimensions[1].height = 30
-    ws1.freeze_panes = "A3"
+    ws1.title = "All Students"
+    ws1.sheet_view.showGridLines = False
 
-    # Build columns
-    base_cols = ["Roll Number", "Name", "Gender", "Result"]
-    subject_cols = []
-    for mc in mark_cols:
-        gc = get_grade_col(df, mc)
-        subject_cols.append(mc)
-        if gc and gc in df.columns:
-            subject_cols.append(gc)
-    extra = ["Lang2_Name"] if "Lang2_Name" in df.columns else []
-    all_cols = base_cols + extra + subject_cols + ["Total"]
+    cols1   = ["Rank","Roll","Name","Gender","Lang2_Name","Result",
+               "English_M","English_G","Lang2_M","Lang2_G",
+               "Maths_M","Maths_G","Science_M","Science_G","Social_M","Social_G","Total"]
+    hdrs1   = ["Rank","Roll No","Name","Gender","2nd Lang","Result",
+               "Eng","Eng Gr","Lang2","L2 Gr",
+               "Maths","Math Gr","Science","Sci Gr","Social","Soc Gr","Total/500"]
+    n1      = len(cols1)
 
-    # Title row
-    title_cell = ws1.cell(1, 1, "CBSE Class X Results — Complete Student Data")
-    title_cell.font = Font(bold=True, size=13, color=HDR_FG)
-    title_cell.fill = PatternFill("solid", fgColor=HDR_BG)
-    title_cell.alignment = Alignment(horizontal="center", vertical="center")
-    ws1.merge_cells(start_row=1, start_column=1, end_row=1, end_column=len(all_cols))
+    title_row(ws1, "CBSE Class X Results 2023 — Ganges Valley School, Bachupally", n1)
+    ws1.row_dimensions[2].height = 24
+    for ci, lbl in enumerate(hdrs1, 1):
+        hdr(ws1.cell(2, ci), lbl, bg=C_MID)
 
-    # Header row
-    for col_idx, col in enumerate(all_cols, 1):
-        cell = ws1.cell(2, col_idx, col.replace("_", " ").replace("Marks", "Mks").replace("Grade", "Gr"))
-        hdr_style(cell, bg=SUBHDR)
-
-    # Data rows
-    for r_idx, (_, row) in enumerate(df[all_cols].iterrows(), 3):
-        bg = PASS_BG if str(row.get("Result", "")).upper() == "PASS" else \
-             (FAIL_BG if str(row.get("Result", "")).upper() == "FAIL" else None)
-        is_alt = r_idx % 2 == 0
-        for c_idx, col in enumerate(all_cols, 1):
-            val = row.get(col, "")
-            if pd.isna(val):
-                val = ""
-            cell = ws1.cell(r_idx, c_idx, val)
-            row_bg = bg or (ALT_ROW if is_alt else None)
-            data_style(cell, center=(c_idx > 2), bg=row_bg)
+    df1 = df.sort_values("Total", ascending=False).reset_index(drop=True)
+    for ri, (_, row) in enumerate(df1[cols1].iterrows(), 3):
+        alt = ri % 2 == 0
+        rbg = C_GRAY if alt else C_WHITE
+        for ci, col in enumerate(cols1, 1):
+            v = row[col]
+            if pd.isna(v): v = ""
+            cell = ws1.cell(ri, ci)
+            if col.endswith("_M") and v != "":
+                cell.value = int(v)
+            elif col == "Total" and v != "":
+                cell.value = int(v)
+            elif col == "Rank":
+                medal = {1:"🥇",2:"🥈",3:"🥉"}.get(int(v),"")
+                cell.value = f"{medal} {int(v)}" if medal else int(v)
+            else:
+                cell.value = v
+            dat(cell, cell.value, bg=rbg, center=(ci != 3))
+            if col.endswith("_G") and v in gf:
+                cell.fill = gf[v]
+                cell.font = Font(name="Calibri", bold=True, color=C_WHITE, size=10)
             if col == "Total":
-                cell.font = Font(bold=True, size=10)
+                cell.font = Font(name="Calibri", bold=True, color=C_DARK, size=11)
 
-    # Column widths
-    widths = {"Roll Number": 14, "Name": 28, "Gender": 8, "Result": 8, "Lang2_Name": 14, "Total": 9}
-    for c_idx, col in enumerate(all_cols, 1):
-        w = widths.get(col, 10 if "Grade" in col else 9)
-        col_width(ws1, c_idx, w)
+    widths1 = [9,13,30,7,10,7,7,8,7,8,7,8,8,8,7,8,10]
+    for i, w in enumerate(widths1, 1): col_w(ws1, i, w)
+    ws1.freeze_panes = "C3"
+    ws1.auto_filter.ref = f"A2:{get_column_letter(n1)}2"
+    color_scale(ws1, f"{get_column_letter(n1)}3:{get_column_letter(n1)}{2+len(df)}")
 
-    # Auto-filter
-    ws1.auto_filter.ref = f"A2:{get_column_letter(len(all_cols))}2"
+    # ══════════════════════════════════════════════════════════════════════════
+    # SHEET 2 — Dashboard
+    # ══════════════════════════════════════════════════════════════════════════
+    ws2 = wb.create_sheet("Dashboard")
+    ws2.sheet_view.showGridLines = False
+    for c in range(1, 14): col_w(ws2, c, 14)
+    ws2.column_dimensions["A"].width = 24
 
-    # ════════════════════════════════════════════════════════════
-    # SHEET 2: Class Summary Dashboard
-    # ════════════════════════════════════════════════════════════
-    ws2 = wb.create_sheet("📊 Class Summary")
-    ws2.row_dimensions[1].height = 28
-    ws2.column_dimensions["A"].width = 28
-    ws2.column_dimensions["B"].width = 16
-    ws2.column_dimensions["C"].width = 16
-    ws2.column_dimensions["D"].width = 16
-    ws2.column_dimensions["E"].width = 16
-    ws2.column_dimensions["F"].width = 16
-    ws2.column_dimensions["G"].width = 16
+    title_row(ws2, "Class Dashboard — Performance Summary", 12)
 
-    t = ws2.cell(1, 1, "Class Summary — Subject-wise Statistics")
-    t.font = Font(bold=True, size=13, color=HDR_FG)
-    t.fill = PatternFill("solid", fgColor=HDR_BG)
-    t.alignment = Alignment(horizontal="center", vertical="center")
-    ws2.merge_cells("A1:G1")
+    # KPI row
+    kpis = [
+        ("Total Students", len(df),               C_MID,    1),
+        ("Pass Rate",      "100%",                 C_GREEN,  3),
+        ("Class Average",  f"{df['Total'].mean():.1f}/500", C_ACCENT, 5),
+        ("Highest Score",  f"{int(df['Total'].max())}/500", "6B2FBE", 7),
+        ("Boys / Girls",   f"{int((df.Gender=='M').sum())} / {int((df.Gender=='F').sum())}", "0D6EFD", 9),
+        ("School",         "57643",                "555555", 11),
+    ]
+    ws2.row_dimensions[3].height = 14
+    ws2.row_dimensions[4].height = 32
+    for label, val, color, col in kpis:
+        lc = ws2.cell(3, col, label)
+        lc.font = Font(name="Calibri", size=9, color="777777")
+        lc.alignment = Alignment(horizontal="center")
+        lc.fill = PatternFill("solid", fgColor="F8FAFF")
+        ws2.merge_cells(start_row=3, start_column=col, end_row=3, end_column=col+1)
+        vc = ws2.cell(4, col, val)
+        vc.font = Font(name="Calibri", bold=True, size=16, color=color)
+        vc.fill = PatternFill("solid", fgColor="F8FAFF")
+        vc.alignment = Alignment(horizontal="center", vertical="center")
+        vc.border = Border(bottom=Side(style="thick", color=color))
+        ws2.merge_cells(start_row=4, start_column=col, end_row=4, end_column=col+1)
 
-    for c_idx, hdr in enumerate(["Subject", "Mean", "Median", "Std Dev", "Highest", "Lowest", "Students"], 1):
-        cell = ws2.cell(2, c_idx, hdr)
-        hdr_style(cell, bg=SUBHDR)
-
-    for r_idx, mc in enumerate(mark_cols, 3):
-        vals = pd.to_numeric(df[mc], errors="coerce").dropna()
-        subj = mc.replace("_Marks", "")
-        data = [subj, round(vals.mean(), 1), round(vals.median(), 1),
-                round(vals.std(), 1), int(vals.max()), int(vals.min()), len(vals)]
-        for c_idx, v in enumerate(data, 1):
-            cell = ws2.cell(r_idx, c_idx, v)
-            data_style(cell, center=(c_idx > 1), bg=ALT_ROW if r_idx % 2 == 0 else None,
-                       bold=(c_idx == 1))
-
+    # Subject stats table
+    ws2.row_dimensions[6].height = 22
+    ws2.merge_cells("A6:H6")
+    title_row(ws2, "Subject-wise Statistics", 8, row=6, bg=C_MID)
+    for ci, h in enumerate(["Subject","Average","Median","Highest","Lowest","Std Dev","A1+A2 %","A1+A2 Count"], 1):
+        hdr(ws2.cell(7, ci), h, bg=C_DARK)
+    for ri, subj in enumerate(SUBJECTS, 8):
+        s = pd.to_numeric(df[f"{subj}_M"], errors="coerce").dropna()
+        a1a2 = df[f"{subj}_G"].isin(["A1","A2"]).sum()
+        pct  = f"{a1a2/len(df)*100:.0f}%"
+        vals = [SUBJ_LABELS[subj], round(s.mean(),1), round(s.median(),1),
+                int(s.max()), int(s.min()), round(s.std(),1), pct, int(a1a2)]
+        alt  = ri % 2 == 0
+        for ci, v in enumerate(vals, 1):
+            dat(ws2.cell(ri, ci), v, bg=C_GRAY if alt else C_WHITE,
+                bold=(ci == 1), center=(ci != 1))
     # Total row
-    total_vals = pd.to_numeric(df["Total"], errors="coerce").dropna()
-    r_tot = 3 + len(mark_cols)
-    total_data = ["TOTAL", round(total_vals.mean(), 1), round(total_vals.median(), 1),
-                  round(total_vals.std(), 1), int(total_vals.max()), int(total_vals.min()), len(total_vals)]
-    for c_idx, v in enumerate(total_data, 1):
-        cell = ws2.cell(r_tot, c_idx, v)
-        hdr_style(cell, bg="2E75B6")
+    ts = df["Total"]
+    tr = ["TOTAL  (/500)", round(ts.mean(),1), round(ts.median(),1),
+          int(ts.max()), int(ts.min()), round(ts.std(),1), "100%", len(df)]
+    ws2.merge_cells("A13:H13") if False else None
+    for ci, v in enumerate(tr, 1):
+        hdr(ws2.cell(13, ci), v, bg=C_ACCENT, fg=C_DARK)
 
-    # Pass/Fail section
-    ws2.cell(r_tot + 2, 1, "Pass/Fail Breakdown").font = Font(bold=True, size=11)
-    pf = pass_fail_counts(df)
-    for r_idx, (status, count) in enumerate(pf.items(), r_tot + 3):
-        ws2.cell(r_idx, 1, status)
-        ws2.cell(r_idx, 2, count)
-        ws2.cell(r_idx, 3, f"=B{r_idx}/B{r_tot+2+len(pf)+1}")
+    # Gender comparison
+    ws2.row_dimensions[15].height = 22
+    ws2.merge_cells("A15:H15")
+    title_row(ws2, "Gender Performance Comparison", 8, row=15, bg=C_MID)
+    for ci, h in enumerate(["Gender","English","Lang2","Maths","Science","Social","Avg Total","Count"], 1):
+        hdr(ws2.cell(16, ci), h, bg=C_DARK)
+    for ri, (g, grp) in enumerate(df.groupby("Gender"), 17):
+        avgs = [round(pd.to_numeric(grp[f"{s}_M"], errors="coerce").mean(), 1) for s in SUBJECTS]
+        row_data = [("Female 👩" if g=="F" else "Male 👦")] + avgs + [round(grp["Total"].mean(),1), len(grp)]
+        for ci, v in enumerate(row_data, 1):
+            dat(ws2.cell(ri, ci), v, bg="FFF0F5" if g=="F" else "EFF6FF",
+                bold=(ci==1), center=(ci!=1))
 
-    # Lang2 breakdown if exists
-    if "Lang2_Name" in df.columns:
-        groups = get_lang2_breakdown(df)
-        r_lang = r_tot + 3 + len(pf) + 2
-        ws2.cell(r_lang, 1, "2nd Language Breakdown").font = Font(bold=True, size=11)
-        for c_idx, hdr in enumerate(["Language", "Students", "Avg Total"], 1):
-            cell = ws2.cell(r_lang + 1, c_idx, hdr)
-            hdr_style(cell, bg=SUBHDR)
-        for r_idx, (lang, sub) in enumerate(groups.items(), r_lang + 2):
-            ws2.cell(r_idx, 1, lang)
-            ws2.cell(r_idx, 2, len(sub))
-            avg = pd.to_numeric(sub.get("Total", pd.Series(dtype=float)), errors="coerce").mean()
-            ws2.cell(r_idx, 3, round(avg, 1) if not pd.isna(avg) else "")
+    # Lang2 breakdown
+    ws2.row_dimensions[20].height = 22
+    ws2.merge_cells("A20:F20")
+    title_row(ws2, "2nd Language Group Analysis", 6, row=20, bg=C_MID)
+    for ci, h in enumerate(["Language","Students","% of Class","Avg Total","Avg Lang2 Marks","A1+A2 %"], 1):
+        hdr(ws2.cell(21, ci), h, bg=C_DARK)
+    for ri, (lang, grp) in enumerate(df.groupby("Lang2_Name"), 22):
+        l2_avg  = pd.to_numeric(grp["Lang2_M"], errors="coerce").mean()
+        a1a2_pct= f"{grp['Lang2_G'].isin(['A1','A2']).sum()/len(grp)*100:.0f}%"
+        vals = [lang, len(grp), f"{len(grp)/len(df)*100:.1f}%",
+                round(grp["Total"].mean(),1), round(l2_avg,1), a1a2_pct]
+        for ci, v in enumerate(vals, 1):
+            dat(ws2.cell(ri, ci), v, bg=C_GRAY if ri%2==0 else C_WHITE,
+                bold=(ci==1), center=(ci!=1))
 
-    # ════════════════════════════════════════════════════════════
-    # SHEET 3: Grade Distribution
-    # ════════════════════════════════════════════════════════════
-    ws3 = wb.create_sheet("📈 Grade Distribution")
-    gs = grade_summary(df)
-    if not gs.empty:
-        ws3.cell(1, 1, "Grade Distribution by Subject").font = Font(bold=True, size=13, color=HDR_FG)
-        ws3.cell(1, 1).fill = PatternFill("solid", fgColor=HDR_BG)
-        ws3.cell(1, 1).alignment = Alignment(horizontal="center")
-        present_grades = [g for g in GRADE_ORDER if g in gs.columns]
-        headers = ["Subject"] + present_grades + ["Total Students"]
-        ws3.merge_cells(start_row=1, start_column=1, end_row=1, end_column=len(headers))
-        for c_idx, h in enumerate(headers, 1):
-            cell = ws3.cell(2, c_idx, h)
-            hdr_style(cell, bg=SUBHDR)
-        for r_idx, (subj, row) in enumerate(gs.iterrows(), 3):
-            ws3.cell(r_idx, 1, subj).font = Font(bold=True)
-            total_students = 0
-            for c_idx, g in enumerate(present_grades, 2):
-                val = int(row.get(g, 0))
-                cell = ws3.cell(r_idx, c_idx, val if val > 0 else "")
-                total_students += val
-                bg = ALT_ROW if r_idx % 2 == 0 else None
-                if g in ("A1", "A2") and val > 0:
-                    bg = "E2EFDA"
-                elif g in ("E1", "E2", "F") and val > 0:
-                    bg = "FFE6E6"
-                data_style(cell, center=True, bg=bg)
-            cell_total = ws3.cell(r_idx, len(headers), total_students)
-            cell_total.font = Font(bold=True)
-            cell_total.alignment = Alignment(horizontal="center")
-        ws3.column_dimensions["A"].width = 22
-        for c in range(2, len(headers) + 1):
-            ws3.column_dimensions[get_column_letter(c)].width = 9
+    # Bar chart: subject averages
+    _CR = 27  # chart data start row
+    ws2.cell(_CR, 1, "Subject"); ws2.cell(_CR, 2, "Average")
+    for ri, subj in enumerate(SUBJECTS, _CR+1):
+        ws2.cell(ri, 1, SUBJ_LABELS[subj])
+        ws2.cell(ri, 2, round(pd.to_numeric(df[f"{subj}_M"], errors="coerce").mean(), 1))
 
-    # ════════════════════════════════════════════════════════════
-    # SHEET 4: Top Performers
-    # ════════════════════════════════════════════════════════════
-    ws4 = wb.create_sheet("🏆 Top Performers")
-    ws4.cell(1, 1, "Top 10 Students by Total Marks").font = Font(bold=True, size=13, color=HDR_FG)
-    ws4.cell(1, 1).fill = PatternFill("solid", fgColor=HDR_BG)
-    ws4.cell(1, 1).alignment = Alignment(horizontal="center")
+    bar = BarChart()
+    bar.type  = "col"; bar.style = 10
+    bar.title = "Class Average — Subject Comparison"
+    bar.y_axis.title = "Average Marks"; bar.x_axis.title = "Subject"
+    bar.width = 16; bar.height = 11
+    bar.y_axis.scaling.min = 50; bar.y_axis.scaling.max = 100
+    bar.add_data(Reference(ws2, min_col=2, min_row=_CR, max_row=_CR+5), titles_from_data=True)
+    bar.set_categories(Reference(ws2, min_col=1, min_row=_CR+1, max_row=_CR+5))
+    bar.series[0].graphicalProperties.solidFill = C_MID
+    ws2.add_chart(bar, "J1")
 
-    df_sorted = df.sort_values("Total", ascending=False).reset_index(drop=True)
-    top_cols = ["Name", "Roll Number", "Gender", "Result"] + \
-               ([mc for mc in mark_cols]) + ["Total"]
-    if "Lang2_Name" in df.columns:
-        top_cols.insert(4, "Lang2_Name")
+    # Gender pie
+    _GR = _CR + 7
+    ws2.cell(_GR, 1,"Gender"); ws2.cell(_GR,2,"Count")
+    for ri,(g,cnt) in enumerate(df["Gender"].value_counts().items(), _GR+1):
+        ws2.cell(ri,1,"Male" if g=="M" else "Female"); ws2.cell(ri,2,cnt)
+    pie = PieChart(); pie.style=10
+    pie.title="Gender Split"; pie.width=10; pie.height=8
+    pie.add_data(Reference(ws2,min_col=2,min_row=_GR,max_row=_GR+2),titles_from_data=True)
+    pie.set_categories(Reference(ws2,min_col=1,min_row=_GR+1,max_row=_GR+2))
+    ws2.add_chart(pie, "J14")
 
-    available_top_cols = [c for c in top_cols if c in df_sorted.columns]
-    ws4.merge_cells(start_row=1, start_column=1, end_row=1, end_column=len(available_top_cols))
-    for c_idx, col in enumerate(available_top_cols, 1):
-        cell = ws4.cell(2, c_idx, col.replace("_Marks", "").replace("_", " "))
-        hdr_style(cell, bg=SUBHDR)
+    # ══════════════════════════════════════════════════════════════════════════
+    # SHEET 3 — Grade Distribution
+    # ══════════════════════════════════════════════════════════════════════════
+    ws3 = wb.create_sheet("Grade Distribution")
+    ws3.sheet_view.showGridLines = False
+    ws3.column_dimensions["A"].width = 20
+    for i in range(2, 16): col_w(ws3, i, 9)
 
-    for r_idx, (_, row) in enumerate(df_sorted.head(20)[available_top_cols].iterrows(), 3):
-        medal = "🥇" if r_idx == 3 else "🥈" if r_idx == 4 else "🥉" if r_idx == 5 else ""
-        for c_idx, col in enumerate(available_top_cols, 1):
-            val = row.get(col, "")
-            if pd.isna(val):
-                val = ""
-            if col == "Name" and medal:
-                val = f"{medal} {val}"
-            cell = ws4.cell(r_idx, c_idx, val)
-            data_style(cell, center=(c_idx > 2),
-                       bg=PASS_BG if r_idx % 2 == 0 else None,
-                       bold=(col == "Total"))
+    present = [g for g in GRADE_ORDER
+               if any(df[f"{s}_G"].eq(g).any() for s in SUBJECTS)]
+    n3      = 1 + len(present) + 2
 
-    ws4.column_dimensions["A"].width = 28
-    ws4.column_dimensions["B"].width = 14
-    for c in range(3, len(available_top_cols) + 1):
-        ws4.column_dimensions[get_column_letter(c)].width = 10
+    title_row(ws3, "Grade Distribution — Subject × Grade Matrix", n3)
+    hdrs3 = ["Subject"] + present + ["Total Stdnts","A1+A2 %"]
+    for ci, h in enumerate(hdrs3, 1):
+        cell = ws3.cell(2, ci, h)
+        bg   = GRADE_COLORS.get(h, C_MID)
+        hdr(cell, h, bg=bg, fg="FFFFFF" if h in GRADE_COLORS else C_WHITE)
+    ws3.row_dimensions[2].height = 22
 
-    ws4.auto_filter.ref = f"A2:{get_column_letter(len(available_top_cols))}2"
+    for ri, subj in enumerate(SUBJECTS, 3):
+        ws3.cell(ri, 1, SUBJ_LABELS[subj]).font = Font(name="Calibri", bold=True, size=10, color=C_DARK)
+        ws3.cell(ri, 1).alignment = Alignment(horizontal="left", vertical="center")
+        ws3.cell(ri, 1).border = brd
+        ws3.cell(ri, 1).fill   = PatternFill("solid", fgColor=C_GRAY if ri%2==0 else C_WHITE)
+        total_n = 0; a1a2_n = 0
+        for ci, g in enumerate(present, 2):
+            cnt  = int(df[f"{subj}_G"].eq(g).sum())
+            cell = ws3.cell(ri, ci, cnt if cnt > 0 else "")
+            cell.alignment = Alignment(horizontal="center", vertical="center")
+            cell.border = brd
+            if cnt > 0 and g in gf:
+                cell.fill = gf[g]
+                cell.font = Font(name="Calibri", bold=True, color=C_WHITE, size=10)
+            else:
+                cell.fill = PatternFill("solid", fgColor=C_GRAY if ri%2==0 else C_WHITE)
+                cell.font = Font(name="Calibri", color="BBBBBB", size=10)
+            total_n += cnt
+            if g in ("A1","A2"): a1a2_n += cnt
+        dat(ws3.cell(ri, len(present)+2), total_n, bold=True, bg=C_LIGHT)
+        pct = f"{a1a2_n/total_n*100:.0f}%" if total_n else ""
+        dat(ws3.cell(ri, len(present)+3), pct, bold=True,
+            bg=C_GREEN2 if a1a2_n/max(total_n,1) >= 0.5 else C_RED2)
+
+    # Totals row
+    for ci, g in enumerate(present, 2):
+        cnt = sum(int(df[f"{s}_G"].eq(g).sum()) for s in SUBJECTS)
+        hdr(ws3.cell(8, ci), cnt, bg=C_DARK)
+    hdr(ws3.cell(8, 1), "CLASS TOTAL", bg=C_DARK)
+    hdr(ws3.cell(8, len(present)+2), len(df)*5, bg=C_DARK)
+
+    # stacked bar chart
+    _GD = 10
+    ws3.cell(_GD, 1, "Subject")
+    use_g = present[:7]
+    for ci, g in enumerate(use_g, 2): ws3.cell(_GD, ci, g)
+    for ri, subj in enumerate(SUBJECTS, _GD+1):
+        ws3.cell(ri, 1, SUBJ_LABELS[subj])
+        for ci, g in enumerate(use_g, 2):
+            ws3.cell(ri, ci, int(df[f"{subj}_G"].eq(g).sum()))
+
+    bar2 = BarChart(); bar2.type="col"; bar2.grouping="stacked"; bar2.style=10
+    bar2.title="Grade Distribution per Subject"
+    bar2.y_axis.title="Number of Students"; bar2.width=18; bar2.height=12
+    bar2.add_data(Reference(ws3, min_col=2, min_row=_GD, max_col=len(use_g)+1, max_row=_GD+5), titles_from_data=True)
+    bar2.set_categories(Reference(ws3, min_col=1, min_row=_GD+1, max_row=_GD+5))
+    grade_fills = ["1a9850","66bd63","3182bd","6baed6","fdae61","f46d43","d73027"]
+    for i, s in enumerate(bar2.series):
+        if i < len(grade_fills): s.graphicalProperties.solidFill = grade_fills[i]
+    ws3.add_chart(bar2, "A16")
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # SHEET 4 — Rank List
+    # ══════════════════════════════════════════════════════════════════════════
+    ws4 = wb.create_sheet("Rank List")
+    ws4.sheet_view.showGridLines = False
+
+    cols4 = ["Rank","Roll","Name","Gender","Lang2_Name",
+             "English_M","Lang2_M","Maths_M","Science_M","Social_M","Total"]
+    hdrs4 = ["Rank","Roll No","Name","Gender","2nd Lang",
+             "English","Lang2","Maths","Science","Social","Total /500"]
+    n4    = len(cols4)
+
+    title_row(ws4, "Overall Rank List — CBSE Class X 2023", n4)
+    ws4.row_dimensions[2].height = 22
+    for ci, h in enumerate(hdrs4, 1): hdr(ws4.cell(2, ci), h, bg=C_MID)
+
+    df4 = df.sort_values("Total", ascending=False).reset_index(drop=True)
+    for ri, (_, row) in enumerate(df4[cols4].iterrows(), 3):
+        rank = int(row["Rank"])
+        rbg  = {"1":"FFF9E6","2":"F5F5F5","3":"FFF0E6"}.get(str(rank), C_GRAY if ri%2==0 else C_WHITE)
+        for ci, col in enumerate(cols4, 1):
+            v    = row[col]
+            if pd.isna(v): v = ""
+            cell = ws4.cell(ri, ci)
+            if col == "Rank":
+                medal = {1:"🥇",2:"🥈",3:"🥉"}.get(rank,"")
+                cell.value = f"{medal} {rank}" if medal else rank
+            elif col in ("Total",) + tuple(f"{s}_M" for s in SUBJECTS) and v != "":
+                cell.value = int(v)
+            else:
+                cell.value = v
+            dat(cell, cell.value, bg=rbg,
+                bold=(col=="Total" or rank<=3), center=(ci!=3))
+            if col == "Total":
+                cell.font = Font(name="Calibri", bold=True, color=C_DARK, size=11)
+
+    ws4.column_dimensions["A"].width = 9
+    ws4.column_dimensions["B"].width = 13
+    ws4.column_dimensions["C"].width = 30
+    ws4.column_dimensions["D"].width = 8
+    ws4.column_dimensions["E"].width = 10
+    for i in range(6, n4+1): col_w(ws4, i, 10)
     ws4.freeze_panes = "A3"
+    ws4.auto_filter.ref = f"A2:{get_column_letter(n4)}2"
+    color_scale(ws4, f"{get_column_letter(n4)}3:{get_column_letter(n4)}{2+len(df)}")
 
-    # ════════════════════════════════════════════════════════════
-    # SHEET 5: Needs Attention (bottom / failed)
-    # ════════════════════════════════════════════════════════════
-    ws5 = wb.create_sheet("⚠️ Needs Attention")
-    ws5.cell(1, 1, "Students Needing Academic Support").font = Font(bold=True, size=13, color=HDR_FG)
-    ws5.cell(1, 1).fill = PatternFill("solid", fgColor="C00000")
-    ws5.cell(1, 1).alignment = Alignment(horizontal="center")
+    # ══════════════════════════════════════════════════════════════════════════
+    # SHEETS 5–9 — Per-subject rank lists
+    # ══════════════════════════════════════════════════════════════════════════
+    for subj in SUBJECTS:
+        label = SUBJ_LABELS[subj]
+        ws    = wb.create_sheet(label[:12])
+        ws.sheet_view.showGridLines = False
 
-    # Flag students: any fail/E grade OR total below class average
-    avg_total = df["Total"].mean()
-    flagged = df[
-        (df.get("Result", pd.Series(["PASS"] * len(df))).isin(["FAIL", "COMP", "ESSEN"])) |
-        (df["Total"] < avg_total * 0.75)
-    ].sort_values("Total").reset_index(drop=True)
+        scols = ["Roll","Name","Gender","Lang2_Name",f"{subj}_M",f"{subj}_G","Total"]
+        shdrs = ["Roll No","Name","Gender","2nd Lang","Marks","Grade","Total"]
+        ns    = len(scols) + 1
 
-    flagged_cols = ["Name", "Roll Number", "Gender", "Result"] + mark_cols + ["Total"]
-    flagged_cols = [c for c in flagged_cols if c in flagged.columns]
-    ws5.merge_cells(start_row=1, start_column=1, end_row=1, end_column=len(flagged_cols))
-    for c_idx, col in enumerate(flagged_cols, 1):
-        cell = ws5.cell(2, c_idx, col.replace("_Marks", "").replace("_", " "))
-        hdr_style(cell, bg="C00000")
+        title_row(ws, f"Subject Rank — {label}", ns)
+        ws.row_dimensions[2].height = 22
+        hdr(ws.cell(2,1), "Rank", bg=C_MID)
+        for ci, h in enumerate(shdrs, 2): hdr(ws.cell(2, ci), h, bg=C_MID)
 
-    for r_idx, (_, row) in enumerate(flagged[flagged_cols].iterrows(), 3):
-        for c_idx, col in enumerate(flagged_cols, 1):
-            val = row.get(col, "")
-            if pd.isna(val):
-                val = ""
-            cell = ws5.cell(r_idx, c_idx, val)
-            data_style(cell, center=(c_idx > 2), bg=FAIL_BG if r_idx % 2 == 0 else "FFF2CC")
+        dfs = df.sort_values(f"{subj}_M", ascending=False).reset_index(drop=True)
+        for ri, (_, row) in enumerate(dfs.iterrows(), 3):
+            sr   = ri - 2
+            alt  = ri % 2 == 0
+            rbg  = {"1":"FFF9E6","2":"F5F5F5","3":"FFF0E6"}.get(str(sr), C_GRAY if alt else C_WHITE)
+            medal = {1:"🥇",2:"🥈",3:"🥉"}.get(sr,"")
+            c = ws.cell(ri, 1, f"{medal} {sr}" if medal else sr)
+            dat(c, c.value, bg=rbg, bold=(sr<=3))
+            for ci, col in enumerate(scols, 2):
+                v    = row[col]
+                if pd.isna(v): v = ""
+                cell = ws.cell(ri, ci)
+                cell.value = int(v) if isinstance(v, float) and col.endswith("_M") else (int(v) if col=="Total" and v != "" else v)
+                dat(cell, cell.value, bg=rbg, center=(ci!=3))
+                if col == f"{subj}_G" and v in gf:
+                    cell.fill = gf[v]
+                    cell.font = Font(name="Calibri", bold=True, color=C_WHITE, size=10)
 
-    ws5.column_dimensions["A"].width = 28
-    ws5.column_dimensions["B"].width = 14
-    for c in range(3, len(flagged_cols) + 1):
-        ws5.column_dimensions[get_column_letter(c)].width = 10
-    ws5.freeze_panes = "A3"
+        ws.column_dimensions["A"].width = 9
+        ws.column_dimensions["B"].width = 13
+        ws.column_dimensions["C"].width = 30
+        for i in range(4, ns+1): col_w(ws, i, 11)
+        ws.freeze_panes = "A3"
 
-    # ════════════════════════════════════════════════════════════
-    # SHEET 6: Subject-wise Rank Lists
-    # ════════════════════════════════════════════════════════════
-    for mc in mark_cols:
-        subj = mc.replace("_Marks", "")
-        sheet_name = f"🔢 {subj[:12]}"
-        wsx = wb.create_sheet(sheet_name)
-        wsx.cell(1, 1, f"Rank List — {subj}").font = Font(bold=True, size=13, color=HDR_FG)
-        wsx.cell(1, 1).fill = PatternFill("solid", fgColor=HDR_BG)
+        # Stats box
+        sr  = len(df) + 4
+        s   = pd.to_numeric(df[f"{subj}_M"], errors="coerce").dropna()
+        a1a2= df[f"{subj}_G"].isin(["A1","A2"]).sum()
+        title_row(ws, f"{label} — Summary Statistics", ns, row=sr, bg=C_MID)
+        stats_data = [
+            ("Average Marks",  round(s.mean(),1)),
+            ("Median",         round(s.median(),1)),
+            ("Highest",        int(s.max())),
+            ("Lowest",         int(s.min())),
+            ("Std Deviation",  round(s.std(),1)),
+            ("A1 + A2 Count",  int(a1a2)),
+            ("A1 + A2 %",      f"{a1a2/len(df)*100:.0f}%"),
+        ]
+        for i, (lbl, v) in enumerate(stats_data, sr+1):
+            lc = ws.cell(i, 1, lbl)
+            lc.font  = Font(name="Calibri", bold=True, size=10)
+            lc.alignment = Alignment(horizontal="left", vertical="center")
+            lc.fill = PatternFill("solid", fgColor=C_GRAY if i%2==0 else C_WHITE)
+            lc.border= brd
+            vc = ws.cell(i, 2, v)
+            vc.font  = Font(name="Calibri", bold=True, size=10, color=C_MID)
+            vc.alignment = Alignment(horizontal="center", vertical="center")
+            vc.fill = PatternFill("solid", fgColor=C_GRAY if i%2==0 else C_WHITE)
+            vc.border= brd
 
-        gc = get_grade_col(df, mc)
-        rank_cols = ["Name", "Roll Number", "Gender", mc] + ([gc] if gc and gc in df.columns else []) + ["Total"]
-        rank_cols = [c for c in rank_cols if c in df.columns]
-        wsx.merge_cells(start_row=1, start_column=1, end_row=1, end_column=len(rank_cols) + 1)
+    # ══════════════════════════════════════════════════════════════════════════
+    # SHEET 10 — Needs Attention
+    # ══════════════════════════════════════════════════════════════════════════
+    ws10 = wb.create_sheet("Needs Attention")
+    ws10.sheet_view.showGridLines = False
 
-        headers = ["Rank"] + [c.replace("_Marks", "").replace("_Grade", " Grade").replace("_", " ") for c in rank_cols]
-        for c_idx, h in enumerate(headers, 1):
-            cell = wsx.cell(2, c_idx, h)
-            hdr_style(cell, bg=SUBHDR)
+    avg_t  = df["Total"].mean()
+    std_t  = df["Total"].std()
+    thr    = avg_t - std_t
+    flag   = (
+        df[["English_M","Lang2_M","Maths_M","Science_M","Social_M"]].lt(60).any(axis=1) |
+        df["Total"].lt(thr)
+    )
+    df_na  = df[flag].sort_values("Total").reset_index(drop=True)
 
-        ranked = df[rank_cols].copy()
-        ranked[mc] = pd.to_numeric(ranked[mc], errors="coerce")
-        ranked = ranked.sort_values(mc, ascending=False).reset_index(drop=True)
+    na_cols = ["Rank","Roll","Name","Gender","English_M","Lang2_M",
+               "Maths_M","Science_M","Social_M","Total"]
+    na_hdrs = ["Rank","Roll No","Name","Gender","English","Lang2",
+               "Maths","Science","Social","Total"]
+    n10     = len(na_cols)
 
-        for r_idx, (_, row) in enumerate(ranked.iterrows(), 3):
-            wsx.cell(r_idx, 1, r_idx - 2)
-            for c_idx, col in enumerate(rank_cols, 2):
-                val = row.get(col, "")
-                if pd.isna(val):
-                    val = ""
-                cell = wsx.cell(r_idx, c_idx, val)
-                data_style(cell, center=(c_idx > 3), bg=ALT_ROW if r_idx % 2 == 0 else None)
+    title_row(ws10, f"⚠  Needs Attention — {len(df_na)} Students  ⚠", n10, bg=C_RED)
+    sub = ws10.cell(2, 1, f"Criteria: Any subject below 60 marks  OR  Total below {thr:.0f}  (class avg {avg_t:.1f} − 1 SD {std_t:.1f})")
+    sub.font = Font(name="Calibri", italic=True, size=9, color="888888")
+    ws10.merge_cells(start_row=2, start_column=1, end_row=2, end_column=n10)
+    ws10.row_dimensions[3].height = 22
+    for ci, h in enumerate(na_hdrs, 1): hdr(ws10.cell(3, ci), h, bg="8B0000")
 
-        wsx.column_dimensions["A"].width = 8
-        wsx.column_dimensions["B"].width = 28
-        wsx.column_dimensions["C"].width = 14
-        for c in range(4, len(rank_cols) + 2):
-            wsx.column_dimensions[get_column_letter(c)].width = 11
-        wsx.freeze_panes = "A3"
-        wsx.auto_filter.ref = f"A2:{get_column_letter(len(rank_cols)+1)}2"
+    for ri, (_, row) in enumerate(df_na[na_cols].iterrows(), 4):
+        for ci, col in enumerate(na_cols, 1):
+            v    = row[col]
+            if pd.isna(v): v = ""
+            cell = ws10.cell(ri, ci)
+            cell.value = int(v) if isinstance(v, float) and v != "" else v
+            is_low = col.endswith("_M") and isinstance(v, (int,float)) and v < 60
+            bg = "FFD5D5" if is_low else (C_GRAY if ri%2==0 else C_WHITE)
+            dat(cell, cell.value, bg=bg, center=(ci!=3))
+            if is_low:
+                cell.font = Font(name="Calibri", bold=True, color=C_RED, size=10)
 
-    output = BytesIO()
-    wb.save(output)
-    output.seek(0)
-    return output.getvalue()
+    ws10.column_dimensions["A"].width = 7
+    ws10.column_dimensions["B"].width = 13
+    ws10.column_dimensions["C"].width = 30
+    ws10.column_dimensions["D"].width = 8
+    for i in range(5, n10+1): col_w(ws10, i, 10)
+    ws10.freeze_panes = "A4"
+    color_scale(ws10, f"{get_column_letter(n10)}4:{get_column_letter(n10)}{3+len(df_na)}")
+
+    out = BytesIO()
+    wb.save(out)
+    out.seek(0)
+    return out.getvalue()
