@@ -24,6 +24,12 @@ SUBJ_LABELS  = {"English":"English","Lang2":"2nd Language",
                 "Maths":"Mathematics","Science":"Science","Social":"Social Science"}
 
 
+def subject_name_from_code(code):
+    if not code:
+        return ""
+    return SUBJECT_CODE_MAP.get(code, code)
+
+
 def parse(lines_or_path):
     if isinstance(lines_or_path, str):
         with open(lines_or_path, "r", encoding="utf-8", errors="ignore") as f:
@@ -53,9 +59,12 @@ def parse(lines_or_path):
                 "Name":      name,
                 "Gender":    gender,
                 "Result":    result,
-                "Lang2_Name": SUBJECT_CODE_MAP.get(codes[1], "Lang2") if len(codes) > 1 else "Lang2",
+                "Lang2_Name": subject_name_from_code(codes[1]) if len(codes) > 1 else "Lang2",
             }
             for idx, subj in enumerate(SUBJECTS):
+                code = codes[idx] if idx < len(codes) else ""
+                rec[f"{subj}_Code"] = code
+                rec[f"{subj}_Name"] = subject_name_from_code(code)
                 rec[f"{subj}_M"] = int(mg[idx][0]) if idx < len(mg) else np.nan
                 rec[f"{subj}_G"] = mg[idx][1]       if idx < len(mg) else ""
             records.append(rec)
@@ -157,11 +166,17 @@ def build_excel(df):
     ws1.sheet_view.showGridLines = False
 
     cols1 = ["Rank","Roll","Name","Gender","Lang2_Name","Result",
-             "English_M","English_G","Lang2_M","Lang2_G",
-             "Maths_M","Maths_G","Science_M","Science_G","Social_M","Social_G","Total"]
+             "English_Code","English_M","English_G",
+             "Lang2_Code","Lang2_M","Lang2_G",
+             "Maths_Code","Maths_M","Maths_G",
+             "Science_Code","Science_M","Science_G",
+             "Social_Code","Social_M","Social_G","Total"]
     hdrs1 = ["Rank","Roll No","Name","Gender","2nd Lang","Result",
-             "Eng","Eng Gr","Lang2","L2 Gr",
-             "Maths","Math Gr","Science","Sci Gr","Social","Soc Gr","Total/500"]
+             "Eng Code","Eng","Eng Gr",
+             "L2 Code","Lang2","L2 Gr",
+             "Math Code","Maths","Math Gr",
+             "Sci Code","Science","Sci Gr",
+             "Soc Code","Social","Soc Gr","Total/500"]
     n1 = len(cols1)
 
     title_row(ws1, "CBSE Class X Results 2023", n1)
@@ -194,7 +209,7 @@ def build_excel(df):
             if col == "Total":
                 cell.font = Font(name="Calibri", bold=True, color=C_DARK, size=11)
 
-    widths1 = [9,13,30,7,10,7,7,8,7,8,7,8,8,8,7,8,10]
+    widths1 = [9,13,30,7,12,9,9,7,8,9,7,8,10,7,8,9,8,8,10,7,8,10]
     for i, w in enumerate(widths1, 1): col_w(ws1, i, w)
     ws1.freeze_panes = "C3"
     ws1.auto_filter.ref = f"A2:{get_column_letter(n1)}2"
@@ -461,9 +476,17 @@ def build_excel(df):
     ws4.sheet_view.showGridLines = False
 
     cols4 = ["Rank","Roll","Name","Gender","Lang2_Name",
-             "English_M","Lang2_M","Maths_M","Science_M","Social_M","Total"]
+             "English_Code","English_M",
+             "Lang2_Code","Lang2_M",
+             "Maths_Code","Maths_M",
+             "Science_Code","Science_M",
+             "Social_Code","Social_M","Total"]
     hdrs4 = ["Rank","Roll No","Name","Gender","2nd Lang",
-             "English","Lang2","Maths","Science","Social","Total /500"]
+             "Eng Code","English",
+             "L2 Code","Lang2",
+             "Math Code","Maths",
+             "Sci Code","Science",
+             "Soc Code","Social","Total /500"]
     n4 = len(cols4)
 
     title_row(ws4, "Overall Rank List — CBSE Class X 2023", n4)
@@ -494,8 +517,10 @@ def build_excel(df):
     ws4.column_dimensions["B"].width = 13
     ws4.column_dimensions["C"].width = 30
     ws4.column_dimensions["D"].width = 8
-    ws4.column_dimensions["E"].width = 10
-    for i in range(6, n4+1): col_w(ws4, i, 10)
+    ws4.column_dimensions["E"].width = 12
+    widths4 = [9,13,30,8,12,9,10,9,10,9,10,9,10,9,10,11]
+    for i, w in enumerate(widths4, 1):
+        col_w(ws4, i, w)
     ws4.freeze_panes = "A3"
     ws4.auto_filter.ref = f"A2:{get_column_letter(n4)}2"
     color_scale(ws4, f"{get_column_letter(n4)}3:{get_column_letter(n4)}{2+len(df)}")
@@ -508,8 +533,8 @@ def build_excel(df):
         ws    = wb.create_sheet(label[:12])
         ws.sheet_view.showGridLines = False
 
-        scols = ["Roll","Name","Gender","Lang2_Name",f"{subj}_M",f"{subj}_G","Total"]
-        shdrs = ["Roll No","Name","Gender","2nd Lang","Marks","Grade","Total"]
+        scols = ["Roll","Name","Gender","Lang2_Name",f"{subj}_Code",f"{subj}_M",f"{subj}_G","Total"]
+        shdrs = ["Roll No","Name","Gender","2nd Lang","Sub Code","Marks","Grade","Total"]
         ns    = len(scols) + 1
 
         title_row(ws, f"Subject Rank — {label}", ns)
@@ -583,10 +608,18 @@ def build_excel(df):
     )
     df_na = df[flag].sort_values("Total").reset_index(drop=True)
 
-    na_cols = ["Rank","Roll","Name","Gender","English_M","Lang2_M",
-               "Maths_M","Science_M","Social_M","Total"]
-    na_hdrs = ["Rank","Roll No","Name","Gender","English","Lang2",
-               "Maths","Science","Social","Total"]
+    na_cols = ["Rank","Roll","Name","Gender",
+               "English_Code","English_M",
+               "Lang2_Code","Lang2_M",
+               "Maths_Code","Maths_M",
+               "Science_Code","Science_M",
+               "Social_Code","Social_M","Total"]
+    na_hdrs = ["Rank","Roll No","Name","Gender",
+               "Eng Code","English",
+               "L2 Code","Lang2",
+               "Math Code","Maths",
+               "Sci Code","Science",
+               "Soc Code","Social","Total"]
     n10 = len(na_cols)
 
     title_row(ws10, f"⚠  Needs Attention — {len(df_na)} Students", n10, bg=C_RED)
@@ -616,7 +649,9 @@ def build_excel(df):
     ws10.column_dimensions["B"].width = 13
     ws10.column_dimensions["C"].width = 30
     ws10.column_dimensions["D"].width = 8
-    for i in range(5, n10+1): col_w(ws10, i, 10)
+    widths10 = [7,13,30,8,9,10,9,10,9,10,9,10,9,10,11]
+    for i, w in enumerate(widths10, 1):
+        col_w(ws10, i, w)
     ws10.freeze_panes = "A4"
     color_scale(ws10, f"{get_column_letter(n10)}4:{get_column_letter(n10)}{3+len(df_na)}")
 
