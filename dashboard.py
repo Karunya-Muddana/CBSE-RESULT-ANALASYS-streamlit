@@ -30,6 +30,7 @@ SUBJ_LABELS = sa.SUBJ_LABELS
 # ══════════════════════════════════════════════════════════════════════════════
 with st.sidebar:
     st.title("🎓 CBSE Analyser")
+    st.subheader("A QUALITY PRODUCT BY KARUNYA MUDDANA")
     st.divider()
     uploaded = st.file_uploader("Upload Gazette (.txt)", type=["txt"])
     st.divider()
