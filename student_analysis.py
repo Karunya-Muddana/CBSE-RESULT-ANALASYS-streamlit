@@ -6,8 +6,15 @@ from io import BytesIO
 SUBJECT_CODE_MAP = {
     "184": "English", "085": "Hindi(B)", "089": "Telugu", "018": "French",
     "041": "Maths(STD)", "086": "Science", "087": "Social", "049": "Painting",
-    "165": "Computer Applications", "002": "Hindi(A)", 
+    "165": "Computer Applications", "002": "Hindi(A)",
+    "241": "Painting",   # Painting code used in Maths slot
 }
+
+# Codes that are valid 2nd-language subjects (position index 1)
+LANG2_CODES = {"085", "089", "018", "165", "002"}
+
+# Codes that are valid Maths-slot subjects (position index 2)
+MATHS_SLOT_CODES = {"041", "241"}
 
 GRADE_ORDER = ["A1","A2","B1","B2","C1","C2","D1","D2","E1","E2","F"]
 
@@ -21,7 +28,7 @@ GRADE_COLORS = {
 
 SUBJECTS     = ["English","Lang2","Maths","Science","Social"]
 SUBJ_LABELS  = {"English":"English","Lang2":"2nd Language",
-                "Maths":"Mathematics","Science":"Science","Social":"Social Science"}
+                "Maths":"Mathematics / Painting","Science":"Science","Social":"Social Science"}
 
 
 def subject_name_from_code(code):
@@ -49,24 +56,36 @@ def parse(lines_or_path):
             roll, gender, name = m.group(1), m.group(2), m.group(3).strip()
             codes  = re.findall(r"\d{3}", m.group(4))
             result = m.group(5)
+
+            # Advance to the marks+grades line
             j = i + 1
             while j < len(lines) and not re.search(r"\d{2,3}\s+[A-F]\d?", lines[j]):
                 j += 1
             mg = re.findall(r"(\d{1,3})\s+([A-F]\d?)", lines[j]) if j < len(lines) else []
 
+            # ── Determine 2nd-language name ──────────────────────────────────
+            # codes[1] is always Lang2; codes[2] is Maths OR Painting (241)
+            lang2_code = codes[1] if len(codes) > 1 else ""
+            maths_code = codes[2] if len(codes) > 2 else ""
+
             rec = {
-                "Roll":      roll,
-                "Name":      name,
-                "Gender":    gender,
-                "Result":    result,
-                "Lang2_Name": subject_name_from_code(codes[1]) if len(codes) > 1 else "Lang2",
+                "Roll":       roll,
+                "Name":       name,
+                "Gender":     gender,
+                "Result":     result,
+                "Lang2_Name": subject_name_from_code(lang2_code),
+                "Has_Painting": maths_code == "241",   # flag for painting students
             }
+
+            # Assign marks positionally (positions 0-4 → English/Lang2/Maths/Science/Social)
+            # Position 2 can be 041 (Maths) or 241 (Painting) — both stored in Maths slot
             for idx, subj in enumerate(SUBJECTS):
                 code = codes[idx] if idx < len(codes) else ""
                 rec[f"{subj}_Code"] = code
                 rec[f"{subj}_Name"] = subject_name_from_code(code)
-                rec[f"{subj}_M"] = int(mg[idx][0]) if idx < len(mg) else np.nan
-                rec[f"{subj}_G"] = mg[idx][1]       if idx < len(mg) else ""
+                rec[f"{subj}_M"]    = int(mg[idx][0]) if idx < len(mg) else np.nan
+                rec[f"{subj}_G"]    = mg[idx][1]       if idx < len(mg) else ""
+
             records.append(rec)
             i = j + 1
         else:
@@ -77,6 +96,19 @@ def parse(lines_or_path):
     df["Total"] = df[mark_cols].sum(axis=1)
     df["Rank"]  = df["Total"].rank(method="min", ascending=False).astype(int)
     return df
+
+
+def _safe_stats(s_ser):
+    """Return (mean, median, max, min, std) safely even if series is empty."""
+    if s_ser.empty:
+        return 0.0, 0.0, 0, 0, 0.0
+    return (
+        round(float(s_ser.mean()), 1),
+        round(float(s_ser.median()), 1),
+        int(s_ser.max()),
+        int(s_ser.min()),
+        round(float(s_ser.std()), 1),
+    )
 
 
 def build_excel(df):
@@ -102,6 +134,7 @@ def build_excel(df):
     C_ALTROW  = "EBF3FC"
     C_TEXT    = "1A1A2E"
     C_STRIPE  = "E2ECF7"
+    C_PAINT   = "F4E4C1"   # warm highlight for Painting students
 
     thin  = Side(style="thin",   color="CBD5E0")
     thick = Side(style="medium", color="A0B4C8")
@@ -145,18 +178,15 @@ def build_excel(df):
     def col_w(ws, col, w):
         ws.column_dimensions[get_column_letter(col)].width = w
 
-    def spacer_row(ws, row, h=10, color="E8EDF4"):
-        ws.row_dimensions[row].height = h
-        for c in ws.iter_cols(min_row=row, max_row=row,
-                               min_col=1, max_col=ws.max_column or 1):
-            pass  # just set height
-
     def color_scale(ws, ref):
         ws.conditional_formatting.add(ref, ColorScaleRule(
             start_type="min",  start_color="FA8072",
             mid_type="percentile", mid_value=50, mid_color="FFEB84",
             end_type="max",    end_color="63BE7B"
         ))
+
+    # Count painting students for dashboard display
+    painting_count = int(df.get("Has_Painting", pd.Series(False)).sum()) if "Has_Painting" in df.columns else 0
 
     # ══════════════════════════════════════════════════════════════════════════
     # SHEET 1 — All Students
@@ -174,21 +204,23 @@ def build_excel(df):
     hdrs1 = ["Rank","Roll No","Name","Gender","2nd Lang","Result",
              "Eng Code","Eng","Eng Gr",
              "L2 Code","Lang2","L2 Gr",
-             "Math Code","Maths","Math Gr",
+             "Math/Paint Code","Math/Paint","M/P Gr",
              "Sci Code","Science","Sci Gr",
              "Soc Code","Social","Soc Gr","Total/500"]
     n1 = len(cols1)
 
-    title_row(ws1, "CBSE Class X Results 2023", n1)
+    title_row(ws1, "CBSE Class X Results 2026", n1)
     ws1.row_dimensions[2].height = 24
     for ci, lbl in enumerate(hdrs1, 1):
         hdr(ws1.cell(2, ci), lbl, bg=C_MID)
 
     df1 = df.sort_values("Total", ascending=False).reset_index(drop=True)
-    for ri, (_, row) in enumerate(df1[cols1].iterrows(), 3):
+    for ri, (_, row) in enumerate(df1.iterrows(), 3):
         ws1.row_dimensions[ri].height = 18
         alt = ri % 2 == 0
-        rbg = C_ALTROW if alt else C_WHITE
+        # Painting students get a warm background tint
+        is_painter = row.get("Has_Painting", False)
+        rbg = C_PAINT if is_painter else (C_ALTROW if alt else C_WHITE)
         for ci, col in enumerate(cols1, 1):
             v = row[col]
             if pd.isna(v): v = ""
@@ -208,56 +240,50 @@ def build_excel(df):
                 cell.font = Font(name="Calibri", bold=True, color=C_WHITE, size=10)
             if col == "Total":
                 cell.font = Font(name="Calibri", bold=True, color=C_DARK, size=11)
+            # Flag Painting subject code cell
+            if col == "Maths_Code" and v == "241":
+                cell.fill = PatternFill("solid", fgColor="E8A838")
+                cell.font = Font(name="Calibri", bold=True, color=C_WHITE, size=10)
 
-    widths1 = [9,13,30,7,12,9,9,7,8,9,7,8,10,7,8,9,8,8,10,7,8,10]
+    widths1 = [9,13,30,7,12,9,9,7,8,9,7,8,12,9,8,9,8,8,10,7,8,10]
     for i, w in enumerate(widths1, 1): col_w(ws1, i, w)
     ws1.freeze_panes = "C3"
     ws1.auto_filter.ref = f"A2:{get_column_letter(n1)}2"
     color_scale(ws1, f"{get_column_letter(n1)}3:{get_column_letter(n1)}{2+len(df)}")
 
     # ══════════════════════════════════════════════════════════════════════════
-    # SHEET 2 — Dashboard  (redesigned)
+    # SHEET 2 — Dashboard
     # ══════════════════════════════════════════════════════════════════════════
     ws2 = wb.create_sheet("Dashboard")
     ws2.sheet_view.showGridLines = False
     ws2.sheet_view.zoomScale = 90
 
-    # Column widths: A=22, B-M=13 each
     ws2.column_dimensions["A"].width = 22
     for c in range(2, 14):
         col_w(ws2, c, 13)
 
-    # ── Row 1: Main title ────────────────────────────────────────────────────
     title_row(ws2, "  CBSE Class X  —  Performance Dashboard", 12)
 
-    # ── Row 2: Accent stripe ─────────────────────────────────────────────────
     ws2.row_dimensions[2].height = 5
     for c in range(1, 13):
         ws2.cell(2, c).fill = PatternFill("solid", fgColor=C_MID)
 
-    # ── Rows 3-5: KPI Cards ──────────────────────────────────────────────────
     kpi_config = [
-        ("TOTAL STUDENTS",  len(df),
-         C_MID,    1),
-        ("PASS RATE",       "100%",
-         C_GREEN,  3),
-        ("CLASS AVERAGE",   f"{df['Total'].mean():.1f} / 500",
-         C_ACCENT, 5),
-        ("HIGHEST SCORE",   f"{int(df['Total'].max())} / 500",
-         "7B2DBE", 7),
+        ("TOTAL STUDENTS",  len(df),                              C_MID,    1),
+        ("PASS RATE",       "100%",                               C_GREEN,  3),
+        ("CLASS AVERAGE",   f"{df['Total'].mean():.1f} / 500",    C_ACCENT, 5),
+        ("HIGHEST SCORE",   f"{int(df['Total'].max())} / 500",    "7B2DBE", 7),
         ("BOYS / GIRLS",    f"{int((df.Gender=='M').sum())}  /  {int((df.Gender=='F').sum())}",
-         "D63384", 9),
-        ("SCHOOL CODE",     "57643",
-         "607080", 11),
+                                                                  "D63384", 9),
+        ("PAINTING OPT.",   f"{painting_count} students",         "C07820", 11),
     ]
 
-    ws2.row_dimensions[3].height = 18   # label
-    ws2.row_dimensions[4].height = 46   # value
-    ws2.row_dimensions[5].height = 6    # bottom accent
+    ws2.row_dimensions[3].height = 18
+    ws2.row_dimensions[4].height = 46
+    ws2.row_dimensions[5].height = 6
 
     card_side = Side(style="thin", color="C8D8E8")
     for label, value, color, col in kpi_config:
-        # Label row
         lc = ws2.cell(3, col, label)
         lc.font      = Font(name="Calibri", size=8, bold=True, color="7A90A4")
         lc.fill      = PatternFill("solid", fgColor="EFF4FA")
@@ -265,7 +291,6 @@ def build_excel(df):
         lc.border    = Border(top=card_side, left=card_side, right=card_side)
         ws2.merge_cells(start_row=3, start_column=col, end_row=3, end_column=col+1)
 
-        # Value row
         vc = ws2.cell(4, col, value)
         vc.font      = Font(name="Calibri", size=22, bold=True, color=color)
         vc.fill      = PatternFill("solid", fgColor=C_WHITE)
@@ -276,15 +301,13 @@ def build_excel(df):
         )
         ws2.merge_cells(start_row=4, start_column=col, end_row=4, end_column=col+1)
 
-        # Bottom gap row (light stripe)
         gc = ws2.cell(5, col)
         gc.fill = PatternFill("solid", fgColor="E2ECF7")
         ws2.merge_cells(start_row=5, start_column=col, end_row=5, end_column=col+1)
 
-    # ── Row 6: spacer ────────────────────────────────────────────────────────
     ws2.row_dimensions[6].height = 14
 
-    # ── Rows 7-14: Subject Statistics ────────────────────────────────────────
+    # ── Subject Statistics ──────────────────────────────────────────────────
     section_hdr(ws2, 7, "  📊   Subject-wise Statistics", 8)
     ws2.row_dimensions[8].height = 22
     for ci, h in enumerate(["Subject","Average","Median","Highest","Lowest","Std Dev","A1+A2 %","Count"], 1):
@@ -294,47 +317,57 @@ def build_excel(df):
         ws2.row_dimensions[ri].height = 22
         s_ser = pd.to_numeric(df[f"{subj}_M"], errors="coerce").dropna()
         a1a2  = df[f"{subj}_G"].isin(["A1","A2"]).sum()
-        vals  = [SUBJ_LABELS[subj],
-                 round(s_ser.mean(), 1), round(s_ser.median(), 1),
-                 int(s_ser.max()), int(s_ser.min()), round(s_ser.std(), 1),
-                 f"{a1a2/len(df)*100:.0f}%", int(a1a2)]
+        avg, med, hi, lo, std = _safe_stats(s_ser)
+        # For Maths slot: show split between Maths takers and Painting takers
+        if subj == "Maths" and painting_count > 0:
+            maths_only = pd.to_numeric(
+                df.loc[~df.get("Has_Painting", pd.Series(False)), f"{subj}_M"],
+                errors="coerce"
+            ).dropna()
+            paint_only = pd.to_numeric(
+                df.loc[df.get("Has_Painting", pd.Series(False)), f"{subj}_M"],
+                errors="coerce"
+            ).dropna()
+            subj_label = f"Maths (n={len(maths_only)}) / Painting (n={len(paint_only)})"
+        else:
+            subj_label = SUBJ_LABELS[subj]
+
+        vals = [subj_label, avg, med, hi, lo, std,
+                f"{a1a2/len(df)*100:.0f}%" if len(df) else "—", int(a1a2)]
         rbg = C_ALTROW if ri % 2 == 0 else C_WHITE
         for ci, v in enumerate(vals, 1):
             dat(ws2.cell(ri, ci), v, bg=rbg, bold=(ci == 1), center=(ci != 1))
 
-    # Total row
     ws2.row_dimensions[14].height = 24
     ts = df["Total"]
+    avg_t, med_t, hi_t, lo_t, std_t = _safe_stats(ts.dropna())
     for ci, v in enumerate(
-        ["ALL SUBJECTS  (/500)", round(ts.mean(),1), round(ts.median(),1),
-         int(ts.max()), int(ts.min()), round(ts.std(),1), "—", len(df)], 1
+        ["ALL SUBJECTS  (/500)", avg_t, med_t, hi_t, lo_t, std_t, "—", len(df)], 1
     ):
         hdr(ws2.cell(14, ci), v, bg=C_ACCENT, fg=C_DARK, size=10)
 
     color_scale(ws2, "B9:B13")
 
-    # ── Row 15: spacer ────────────────────────────────────────────────────────
     ws2.row_dimensions[15].height = 14
 
-    # ── Rows 16-20: Gender Comparison ─────────────────────────────────────────
+    # ── Gender Comparison ────────────────────────────────────────────────────
     section_hdr(ws2, 16, "  👤   Gender Performance Comparison", 8)
     ws2.row_dimensions[17].height = 22
-    for ci, h in enumerate(["Gender","English","Lang2","Maths","Science","Social","Avg Total","Count"], 1):
+    for ci, h in enumerate(["Gender","English","Lang2","Math/Paint","Science","Social","Avg Total","Count"], 1):
         hdr(ws2.cell(17, ci), h, bg=C_DARK)
 
     for ri, (g, grp) in enumerate(df.groupby("Gender"), 18):
         ws2.row_dimensions[ri].height = 22
-        avgs    = [round(pd.to_numeric(grp[f"{s}_M"], errors="coerce").mean(), 1) for s in SUBJECTS]
-        is_f    = (g == "F")
-        row_d   = [("Female 👩" if is_f else "Male 👦")] + avgs + [round(grp["Total"].mean(), 1), len(grp)]
-        rbg     = "FFF0F5" if is_f else "EFF6FF"
+        avgs  = [round(pd.to_numeric(grp[f"{s}_M"], errors="coerce").mean(), 1) for s in SUBJECTS]
+        is_f  = (g == "F")
+        row_d = [("Female 👩" if is_f else "Male 👦")] + avgs + [round(grp["Total"].mean(), 1), len(grp)]
+        rbg   = "FFF0F5" if is_f else "EFF6FF"
         for ci, v in enumerate(row_d, 1):
             dat(ws2.cell(ri, ci), v, bg=rbg, bold=(ci == 1), center=(ci != 1))
 
-    # ── Row 20: spacer ────────────────────────────────────────────────────────
     ws2.row_dimensions[20].height = 14
 
-    # ── Rows 21+: 2nd Language Analysis ──────────────────────────────────────
+    # ── 2nd Language Analysis ────────────────────────────────────────────────
     lang_list = list(df.groupby("Lang2_Name"))
     section_hdr(ws2, 21, "  🌐   2nd Language Group Analysis", 6)
     ws2.row_dimensions[22].height = 22
@@ -351,50 +384,60 @@ def build_excel(df):
         for ci, v in enumerate(vals, 1):
             dat(ws2.cell(ri, ci), v, bg=rbg, bold=(ci == 1), center=(ci != 1))
 
-    # ── Charts (columns J onwards, alongside the data tables) ─────────────────
-    # Chart data stored in hidden helper columns (N/O)
-    _DC = 14   # column N — chart data
-    _DR = 3    # start row for chart data
+    # ── Painting vs Maths breakdown (only if painting students exist) ─────────
+    if painting_count > 0:
+        paint_row = 23 + len(lang_list) + 2
+        section_hdr(ws2, paint_row, "  🎨   Maths vs Painting — Performance Comparison", 6)
+        ws2.row_dimensions[paint_row + 1].height = 22
+        for ci, h in enumerate(["Group","Students","Avg Marks","Median","Highest","Lowest"], 1):
+            hdr(ws2.cell(paint_row + 1, ci), h, bg=C_DARK)
 
-    # Subject averages data
+        groups = [
+            ("Maths (041)",    ~df["Has_Painting"]),
+            ("Painting (241)",  df["Has_Painting"]),
+        ]
+        for offset, (label, mask) in enumerate(groups):
+            ri = paint_row + 2 + offset
+            ws2.row_dimensions[ri].height = 22
+            grp_ser = pd.to_numeric(df.loc[mask, "Maths_M"], errors="coerce").dropna()
+            avg2, med2, hi2, lo2, _ = _safe_stats(grp_ser)
+            row_vals = [label, int(mask.sum()), avg2, med2, hi2, lo2]
+            rbg = C_PAINT if "Painting" in label else C_ALTROW
+            for ci, v in enumerate(row_vals, 1):
+                dat(ws2.cell(ri, ci), v, bg=rbg, bold=(ci == 1), center=(ci != 1))
+
+    # ── Charts ───────────────────────────────────────────────────────────────
+    _DC = 14
+    _DR = 3
     ws2.cell(_DR,   _DC, "Subject")
     ws2.cell(_DR,   _DC+1, "Average")
     for ri, subj in enumerate(SUBJECTS, _DR+1):
         ws2.cell(ri, _DC,   SUBJ_LABELS[subj])
         ws2.cell(ri, _DC+1, round(pd.to_numeric(df[f"{subj}_M"], errors="coerce").mean(), 1))
-    # Hide helper columns
     ws2.column_dimensions[get_column_letter(_DC)].hidden   = True
     ws2.column_dimensions[get_column_letter(_DC+1)].hidden = True
 
     bar = BarChart()
-    bar.type  = "col"
-    bar.style = 10
+    bar.type  = "col"; bar.style = 10
     bar.title = "Class Average by Subject"
     bar.y_axis.title = "Average Marks"
-    bar.width  = 17
-    bar.height = 12
-    bar.y_axis.scaling.min = 50
-    bar.y_axis.scaling.max = 100
-    bar.add_data(Reference(ws2, min_col=_DC+1, min_row=_DR,   max_row=_DR+5), titles_from_data=True)
-    bar.set_categories(Reference(ws2, min_col=_DC,   min_row=_DR+1, max_row=_DR+5))
+    bar.width  = 17; bar.height = 12
+    bar.y_axis.scaling.min = 50; bar.y_axis.scaling.max = 100
+    bar.add_data(Reference(ws2, min_col=_DC+1, min_row=_DR, max_row=_DR+5), titles_from_data=True)
+    bar.set_categories(Reference(ws2, min_col=_DC, min_row=_DR+1, max_row=_DR+5))
     bar.series[0].graphicalProperties.solidFill = C_MID
     ws2.add_chart(bar, "J3")
 
-    # Gender pie data
     _GD = _DR + 8
-    ws2.cell(_GD, _DC, "Gender")
-    ws2.cell(_GD, _DC+1, "Count")
+    ws2.cell(_GD, _DC, "Gender"); ws2.cell(_GD, _DC+1, "Count")
     for ri, (g, cnt) in enumerate(df["Gender"].value_counts().items(), _GD+1):
         ws2.cell(ri, _DC,   "Male" if g == "M" else "Female")
         ws2.cell(ri, _DC+1, int(cnt))
-
     pie = PieChart()
-    pie.style  = 10
-    pie.title  = "Gender Distribution"
-    pie.width  = 14
-    pie.height = 10
-    pie.add_data(Reference(ws2, min_col=_DC+1, min_row=_GD,   max_row=_GD+2), titles_from_data=True)
-    pie.set_categories(Reference(ws2, min_col=_DC,   min_row=_GD+1, max_row=_GD+2))
+    pie.style = 10; pie.title = "Gender Distribution"
+    pie.width = 14; pie.height = 10
+    pie.add_data(Reference(ws2, min_col=_DC+1, min_row=_GD, max_row=_GD+2), titles_from_data=True)
+    pie.set_categories(Reference(ws2, min_col=_DC, min_row=_GD+1, max_row=_GD+2))
     ws2.add_chart(pie, "J17")
 
     # ══════════════════════════════════════════════════════════════════════════
@@ -418,7 +461,10 @@ def build_excel(df):
 
     for ri, subj in enumerate(SUBJECTS, 3):
         ws3.row_dimensions[ri].height = 20
-        ws3.cell(ri, 1, SUBJ_LABELS[subj]).font = Font(name="Calibri", bold=True, size=10, color=C_DARK)
+        label = SUBJ_LABELS[subj]
+        if subj == "Maths" and painting_count > 0:
+            label = f"Maths/Painting ({painting_count}🎨)"
+        ws3.cell(ri, 1, label).font = Font(name="Calibri", bold=True, size=10, color=C_DARK)
         ws3.cell(ri, 1).alignment = Alignment(horizontal="left", vertical="center")
         ws3.cell(ri, 1).border = brd
         ws3.cell(ri, 1).fill   = PatternFill("solid", fgColor=C_ALTROW if ri%2==0 else C_WHITE)
@@ -448,7 +494,6 @@ def build_excel(df):
     hdr(ws3.cell(8, 1), "CLASS TOTAL", bg=C_DARK)
     hdr(ws3.cell(8, len(present)+2), len(df)*5, bg=C_DARK)
 
-    # Stacked bar chart
     _GD2 = 10
     ws3.cell(_GD2, 1, "Subject")
     use_g = present[:7]
@@ -484,20 +529,23 @@ def build_excel(df):
     hdrs4 = ["Rank","Roll No","Name","Gender","2nd Lang",
              "Eng Code","English",
              "L2 Code","Lang2",
-             "Math Code","Maths",
+             "Math/Paint Code","Math/Paint",
              "Sci Code","Science",
              "Soc Code","Social","Total /500"]
     n4 = len(cols4)
 
-    title_row(ws4, "Overall Rank List — CBSE Class X 2023", n4)
+    title_row(ws4, "Overall Rank List — CBSE Class X 2026", n4)
     ws4.row_dimensions[2].height = 22
     for ci, h in enumerate(hdrs4, 1): hdr(ws4.cell(2, ci), h, bg=C_MID)
 
     df4 = df.sort_values("Total", ascending=False).reset_index(drop=True)
-    for ri, (_, row) in enumerate(df4[cols4].iterrows(), 3):
+    for ri, (_, row) in enumerate(df4.iterrows(), 3):
         ws4.row_dimensions[ri].height = 18
-        rank = int(row["Rank"])
-        rbg  = {"1":"FFF9E6","2":"F5F5F5","3":"FFF0E6"}.get(str(rank), C_ALTROW if ri%2==0 else C_WHITE)
+        rank     = int(row["Rank"])
+        is_paint = row.get("Has_Painting", False)
+        rbg = {"1":"FFF9E6","2":"F5F5F5","3":"FFF0E6"}.get(
+            str(rank), C_PAINT if is_paint else (C_ALTROW if ri%2==0 else C_WHITE)
+        )
         for ci, col in enumerate(cols4, 1):
             v = row[col]
             if pd.isna(v): v = ""
@@ -512,15 +560,13 @@ def build_excel(df):
             dat(cell, cell.value, bg=rbg, bold=(col=="Total" or rank<=3), center=(ci!=3))
             if col == "Total":
                 cell.font = Font(name="Calibri", bold=True, color=C_DARK, size=11)
+            # Highlight Painting code cell in amber
+            if col == "Maths_Code" and v == "241":
+                cell.fill = PatternFill("solid", fgColor="E8A838")
+                cell.font = Font(name="Calibri", bold=True, color=C_WHITE, size=10)
 
-    ws4.column_dimensions["A"].width = 9
-    ws4.column_dimensions["B"].width = 13
-    ws4.column_dimensions["C"].width = 30
-    ws4.column_dimensions["D"].width = 8
-    ws4.column_dimensions["E"].width = 12
-    widths4 = [9,13,30,8,12,9,10,9,10,9,10,9,10,9,10,11]
-    for i, w in enumerate(widths4, 1):
-        col_w(ws4, i, w)
+    widths4 = [9,13,30,8,12,9,10,9,10,13,11,9,10,9,10,11]
+    for i, w in enumerate(widths4, 1): col_w(ws4, i, w)
     ws4.freeze_panes = "A3"
     ws4.auto_filter.ref = f"A2:{get_column_letter(n4)}2"
     color_scale(ws4, f"{get_column_letter(n4)}3:{get_column_letter(n4)}{2+len(df)}")
@@ -545,9 +591,12 @@ def build_excel(df):
         dfs = df.sort_values(f"{subj}_M", ascending=False).reset_index(drop=True)
         for ri, (_, row) in enumerate(dfs.iterrows(), 3):
             ws.row_dimensions[ri].height = 18
-            sr    = ri - 2
-            alt   = ri % 2 == 0
-            rbg   = {"1":"FFF9E6","2":"F5F5F5","3":"FFF0E6"}.get(str(sr), C_ALTROW if alt else C_WHITE)
+            sr       = ri - 2
+            alt      = ri % 2 == 0
+            is_paint = row.get("Has_Painting", False) and subj == "Maths"
+            rbg = {"1":"FFF9E6","2":"F5F5F5","3":"FFF0E6"}.get(
+                str(sr), C_PAINT if is_paint else (C_ALTROW if alt else C_WHITE)
+            )
             medal = {1:"🥇",2:"🥈",3:"🥉"}.get(sr,"")
             c = ws.cell(ri, 1, f"{medal} {sr}" if medal else sr)
             dat(c, c.value, bg=rbg, bold=(sr<=3))
@@ -561,6 +610,9 @@ def build_excel(df):
                 if col == f"{subj}_G" and v in gf:
                     cell.fill = gf[v]
                     cell.font = Font(name="Calibri", bold=True, color=C_WHITE, size=10)
+                if col == f"{subj}_Code" and v == "241":
+                    cell.fill = PatternFill("solid", fgColor="E8A838")
+                    cell.font = Font(name="Calibri", bold=True, color=C_WHITE, size=10)
 
         ws.column_dimensions["A"].width = 9
         ws.column_dimensions["B"].width = 13
@@ -568,30 +620,51 @@ def build_excel(df):
         for i in range(4, ns+1): col_w(ws, i, 11)
         ws.freeze_panes = "A3"
 
+        # ── Summary stats block ───────────────────────────────────────────────
         sr2 = len(df) + 4
         s_s = pd.to_numeric(df[f"{subj}_M"], errors="coerce").dropna()
-        a1a2= df[f"{subj}_G"].isin(["A1","A2"]).sum()
+        a1a2 = df[f"{subj}_G"].isin(["A1","A2"]).sum()
+        avg, med, hi, lo, std = _safe_stats(s_s)
+
         title_row(ws, f"{label} — Summary Statistics", ns, row=sr2, bg=C_MID)
         stats_data = [
-            ("Average Marks",  round(s_s.mean(),1)),
-            ("Median",         round(s_s.median(),1)),
-            ("Highest",        int(s_s.max())),
-            ("Lowest",         int(s_s.min())),
-            ("Std Deviation",  round(s_s.std(),1)),
+            ("Average Marks",  avg),
+            ("Median",         med),
+            ("Highest",        hi),
+            ("Lowest",         lo),
+            ("Std Deviation",  std),
             ("A1 + A2 Count",  int(a1a2)),
-            ("A1 + A2 %",      f"{a1a2/len(df)*100:.0f}%"),
+            ("A1 + A2 %",      f"{a1a2/len(df)*100:.0f}%" if len(df) else "—"),
         ]
-        for i, (lbl, v) in enumerate(stats_data, sr2+1):
-            lc = ws.cell(i, 1, lbl)
-            lc.font  = Font(name="Calibri", bold=True, size=10)
+
+        # For Maths slot — append Painting sub-breakdown
+        if subj == "Maths" and painting_count > 0:
+            maths_only = pd.to_numeric(
+                df.loc[~df["Has_Painting"], "Maths_M"], errors="coerce"
+            ).dropna()
+            paint_only = pd.to_numeric(
+                df.loc[df["Has_Painting"],  "Maths_M"], errors="coerce"
+            ).dropna()
+            m_avg, _, m_hi, m_lo, _ = _safe_stats(maths_only)
+            p_avg, _, p_hi, p_lo, _ = _safe_stats(paint_only)
+            stats_data += [
+                ("— Maths (041) takers",   int(len(maths_only))),
+                ("  Avg (Maths only)",      m_avg),
+                ("— Painting (241) takers", int(len(paint_only))),
+                ("  Avg (Painting only)",   p_avg),
+            ]
+
+        for i, (lbl2, v) in enumerate(stats_data, sr2+1):
+            lc = ws.cell(i, 1, lbl2)
+            lc.font      = Font(name="Calibri", bold=True, size=10)
             lc.alignment = Alignment(horizontal="left", vertical="center")
-            lc.fill  = PatternFill("solid", fgColor=C_ALTROW if i%2==0 else C_WHITE)
-            lc.border= brd
+            lc.fill      = PatternFill("solid", fgColor=C_ALTROW if i%2==0 else C_WHITE)
+            lc.border    = brd
             vc = ws.cell(i, 2, v)
-            vc.font  = Font(name="Calibri", bold=True, size=10, color=C_MID)
+            vc.font      = Font(name="Calibri", bold=True, size=10, color=C_MID)
             vc.alignment = Alignment(horizontal="center", vertical="center")
-            vc.fill  = PatternFill("solid", fgColor=C_ALTROW if i%2==0 else C_WHITE)
-            vc.border= brd
+            vc.fill      = PatternFill("solid", fgColor=C_ALTROW if i%2==0 else C_WHITE)
+            vc.border    = brd
 
     # ══════════════════════════════════════════════════════════════════════════
     # SHEET 10 — Needs Attention
@@ -617,7 +690,7 @@ def build_excel(df):
     na_hdrs = ["Rank","Roll No","Name","Gender",
                "Eng Code","English",
                "L2 Code","Lang2",
-               "Math Code","Maths",
+               "Math/Paint Code","Math/Paint",
                "Sci Code","Science",
                "Soc Code","Social","Total"]
     n10 = len(na_cols)
@@ -632,24 +705,28 @@ def build_excel(df):
     ws10.row_dimensions[3].height = 22
     for ci, h in enumerate(na_hdrs, 1): hdr(ws10.cell(3, ci), h, bg="8B0000")
 
-    for ri, (_, row) in enumerate(df_na[na_cols].iterrows(), 4):
+    for ri, (_, row) in enumerate(df_na.iterrows(), 4):
         ws10.row_dimensions[ri].height = 18
+        is_paint = row.get("Has_Painting", False)
         for ci, col in enumerate(na_cols, 1):
             v = row[col]
             if pd.isna(v): v = ""
             cell = ws10.cell(ri, ci)
             cell.value = int(v) if isinstance(v, float) and v != "" else v
             is_low = col.endswith("_M") and isinstance(v, (int,float)) and v < 60
-            bg = "FFD5D5" if is_low else (C_ALTROW if ri%2==0 else C_WHITE)
+            bg = "FFD5D5" if is_low else (C_PAINT if is_paint else (C_ALTROW if ri%2==0 else C_WHITE))
             dat(cell, cell.value, bg=bg, center=(ci!=3))
             if is_low:
                 cell.font = Font(name="Calibri", bold=True, color=C_RED, size=10)
+            if col == "Maths_Code" and v == "241":
+                cell.fill = PatternFill("solid", fgColor="E8A838")
+                cell.font = Font(name="Calibri", bold=True, color=C_WHITE, size=10)
 
     ws10.column_dimensions["A"].width = 7
     ws10.column_dimensions["B"].width = 13
     ws10.column_dimensions["C"].width = 30
     ws10.column_dimensions["D"].width = 8
-    widths10 = [7,13,30,8,9,10,9,10,9,10,9,10,9,10,11]
+    widths10 = [7,13,30,8,9,10,9,10,13,11,9,10,9,10,11]
     for i, w in enumerate(widths10, 1):
         col_w(ws10, i, w)
     ws10.freeze_panes = "A4"
