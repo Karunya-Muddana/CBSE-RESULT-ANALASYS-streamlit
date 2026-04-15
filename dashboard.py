@@ -23,6 +23,36 @@ GRADE_COLORS_HEX = {
 def grade_palette(grades):
     return [GRADE_COLORS_HEX.get(g, "#aaaaaa") for g in grades]
 
+def infer_grade(mark):
+    """Infer CBSE grade from a numeric mark (used when gazette has no grade letters)."""
+    try:
+        m = int(mark)
+    except (TypeError, ValueError):
+        return ""
+    if m >= 91: return "A1"
+    if m >= 81: return "A2"
+    if m >= 71: return "B1"
+    if m >= 61: return "B2"
+    if m >= 51: return "C1"
+    if m >= 41: return "C2"
+    if m >= 33: return "D1"
+    if m >= 21: return "D2"
+    return "F"
+
+def ensure_grades(df):
+    """
+    If the gazette had no grade letters, all _G columns will be empty strings.
+    Fill them in from marks so that all grade-based charts / tables work correctly.
+    """
+    for s in sa.SUBJECTS:
+        gc = f"{s}_G"
+        mc = f"{s}_M"
+        if gc in df.columns and df[gc].eq("").all():
+            df[gc] = pd.to_numeric(df[mc], errors="coerce").apply(
+                lambda v: infer_grade(v) if not pd.isna(v) else ""
+            )
+    return df
+
 SUBJECTS    = sa.SUBJECTS
 SUBJ_LABELS = sa.SUBJ_LABELS
 SEAL_PATH   = Path(__file__).with_name("Quality_verified_seal_design-removebg-preview.png")
@@ -78,6 +108,9 @@ if df.empty:
     st.error("No student records found. Check the file format.")
     st.stop()
 
+# Fill grades from marks if gazette had no grade letters
+df = ensure_grades(df)
+
 mark_cols   = [f"{s}_M" for s in SUBJECTS]
 lang_groups = df.groupby("Lang2_Name")
 
@@ -85,7 +118,7 @@ lang_groups = df.groupby("Lang2_Name")
 # HEADER
 # ══════════════════════════════════════════════════════════════════════════════
 st.title(f"🎓 {school_name}")
-st.caption(f"CBSE Class X Results 2023 — {len(df)} students")
+st.caption(f"CBSE Class X Results 2026 — {len(df)} students")
 
 # ── KPI metrics ───────────────────────────────────────────────────────────────
 k1, k2, k3, k4, k5, k6 = st.columns(6)
@@ -101,6 +134,12 @@ lang_summary = "  |  ".join(
     f"🌐 **{lang}**: {len(g)} students" for lang, g in lang_groups
 )
 st.markdown(lang_summary)
+
+# ── Painting students note ────────────────────────────────────────────────────
+if "Has_Painting" in df.columns:
+    paint_n = int(df["Has_Painting"].sum())
+    if paint_n > 0:
+        st.info(f"🎨 **{paint_n} students** opted for Painting (code 241) in place of Mathematics.")
 
 st.divider()
 
@@ -156,27 +195,57 @@ with col2:
 with col3:
     present_g = [g for g in sa.GRADE_ORDER
                  if any(df[f"{s}_G"].eq(g).any() for s in SUBJECTS)]
-    mat = pd.DataFrame(
-        {g: [df[f"{s}_G"].eq(g).sum() for s in SUBJECTS] for g in present_g},
-        index=[SUBJ_LABELS[s] for s in SUBJECTS]
-    )
-    fig, ax = make_fig()
-    im = ax.imshow(mat.values, cmap=plt.cm.RdYlGn, aspect="auto",
-                   vmin=0, vmax=mat.values.max())
-    ax.set_xticks(range(len(present_g)))
-    ax.set_xticklabels(present_g, fontsize=8)
-    ax.set_yticks(range(len(SUBJECTS)))
-    ax.set_yticklabels(mat.index, fontsize=8)
-    for i in range(len(SUBJECTS)):
-        for j in range(len(present_g)):
-            v = int(mat.values[i, j])
-            if v > 0:
-                ax.text(j, i, str(v), ha="center", va="center", fontsize=9, fontweight="600",
-                        color="white" if mat.values[i, j] > mat.values.max() * 0.5 else "#333")
-    ax.set_title("Grade Count Heatmap", fontsize=10, fontweight="600", pad=8)
-    fig.tight_layout()
-    st.pyplot(fig, use_container_width=True)
-    plt.close(fig)
+    if present_g:
+        mat = pd.DataFrame(
+            {g: [df[f"{s}_G"].eq(g).sum() for s in SUBJECTS] for g in present_g},
+            index=[SUBJ_LABELS[s] for s in SUBJECTS]
+        )
+        fig, ax = make_fig()
+        vmax = mat.values.max() if mat.size > 0 else 1
+        im = ax.imshow(mat.values, cmap=plt.cm.RdYlGn, aspect="auto", vmin=0, vmax=vmax)
+        ax.set_xticks(range(len(present_g)))
+        ax.set_xticklabels(present_g, fontsize=8)
+        ax.set_yticks(range(len(SUBJECTS)))
+        ax.set_yticklabels(mat.index, fontsize=8)
+        for i in range(len(SUBJECTS)):
+            for j in range(len(present_g)):
+                v = int(mat.values[i, j])
+                if v > 0:
+                    ax.text(j, i, str(v), ha="center", va="center", fontsize=9, fontweight="600",
+                            color="white" if mat.values[i, j] > vmax * 0.5 else "#333")
+        ax.set_title("Grade Count Heatmap", fontsize=10, fontweight="600", pad=8)
+        fig.tight_layout()
+        st.pyplot(fig, use_container_width=True)
+        plt.close(fig)
+    else:
+        # Fallback: show a marks-range heatmap when no grade letters present
+        ranges   = ["33-40","41-50","51-60","61-70","71-80","81-90","91-100"]
+        bins     = [33, 41, 51, 61, 71, 81, 91, 101]
+        mat_data = {}
+        for rng, lo, hi in zip(ranges, bins[:-1], bins[1:]):
+            mat_data[rng] = [
+                int(pd.to_numeric(df[f"{s}_M"], errors="coerce")
+                    .between(lo, hi - 1).sum())
+                for s in SUBJECTS
+            ]
+        mat = pd.DataFrame(mat_data, index=[SUBJ_LABELS[s] for s in SUBJECTS])
+        fig, ax = make_fig()
+        vmax = int(mat.values.max()) if mat.size > 0 else 1
+        ax.imshow(mat.values, cmap=plt.cm.RdYlGn, aspect="auto", vmin=0, vmax=vmax)
+        ax.set_xticks(range(len(ranges)))
+        ax.set_xticklabels(ranges, fontsize=7, rotation=30)
+        ax.set_yticks(range(len(SUBJECTS)))
+        ax.set_yticklabels(mat.index, fontsize=8)
+        for i in range(len(SUBJECTS)):
+            for j in range(len(ranges)):
+                v = int(mat.values[i, j])
+                if v > 0:
+                    ax.text(j, i, str(v), ha="center", va="center", fontsize=8, fontweight="600",
+                            color="white" if mat.values[i, j] > vmax * 0.5 else "#333")
+        ax.set_title("Marks Range Heatmap", fontsize=10, fontweight="600", pad=8)
+        fig.tight_layout()
+        st.pyplot(fig, use_container_width=True)
+        plt.close(fig)
 
 col4, col5 = st.columns([3, 2])
 
@@ -232,8 +301,8 @@ s  = pd.to_numeric(df[mc], errors="coerce").dropna()
 m1, m2, m3, m4, m5 = st.columns(5)
 m1.metric("Average",  f"{s.mean():.1f}")
 m2.metric("Median",   f"{s.median():.1f}")
-m3.metric("Highest",  int(s.max()))
-m4.metric("Lowest",   int(s.min()))
+m3.metric("Highest",  int(s.max()) if not s.empty else "—")
+m4.metric("Lowest",   int(s.min()) if not s.empty else "—")
 m5.metric("A1+A2 %",  f"{df[gc].isin(['A1','A2']).sum() / len(df) * 100:.0f}%")
 
 ca, cb, cc = st.columns(3)
@@ -254,18 +323,36 @@ with ca:
 with cb:
     grade_counts = df[gc].value_counts().reindex(sa.GRADE_ORDER).dropna()
     grade_counts = grade_counts[grade_counts > 0]
-    fig, ax = make_fig()
-    bars = ax.bar(grade_counts.index, grade_counts.values,
-                  color=grade_palette(grade_counts.index),
-                  edgecolor="white", linewidth=0.8, zorder=2)
-    for bar, v in zip(bars, grade_counts.values):
-        ax.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.1,
-                str(int(v)), ha="center", va="bottom", fontsize=9, fontweight="600")
-    ax.set_title(f"{SUBJ_LABELS[subj_sel]} — Grade Distribution", fontsize=10, fontweight="600", pad=8)
-    ax.tick_params(labelsize=9)
-    fig.tight_layout()
-    st.pyplot(fig, use_container_width=True)
-    plt.close(fig)
+    if not grade_counts.empty:
+        fig, ax = make_fig()
+        bars = ax.bar(grade_counts.index, grade_counts.values,
+                      color=grade_palette(grade_counts.index),
+                      edgecolor="white", linewidth=0.8, zorder=2)
+        for bar, v in zip(bars, grade_counts.values):
+            ax.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.1,
+                    str(int(v)), ha="center", va="bottom", fontsize=9, fontweight="600")
+        ax.set_title(f"{SUBJ_LABELS[subj_sel]} — Grade Distribution", fontsize=10, fontweight="600", pad=8)
+        ax.tick_params(labelsize=9)
+        fig.tight_layout()
+        st.pyplot(fig, use_container_width=True)
+        plt.close(fig)
+    else:
+        # Fallback: marks-range bar chart
+        bins_e   = [0,33,41,51,61,71,81,91,101]
+        labels_e = ["<33","D1","C2","C1","B2","B1","A2","A1"]
+        counts_e = pd.cut(s, bins=bins_e, labels=labels_e, right=False).value_counts().reindex(labels_e).fillna(0)
+        fig, ax  = make_fig()
+        clrs = [GRADE_COLORS_HEX.get(l, "#aaaaaa") for l in labels_e]
+        bars = ax.bar(labels_e, counts_e.values, color=clrs, edgecolor="white", linewidth=0.8, zorder=2)
+        for bar, v in zip(bars, counts_e.values):
+            if v > 0:
+                ax.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.1,
+                        str(int(v)), ha="center", va="bottom", fontsize=9, fontweight="600")
+        ax.set_title(f"{SUBJ_LABELS[subj_sel]} — Grade Distribution (inferred)", fontsize=10, fontweight="600", pad=8)
+        ax.tick_params(labelsize=9)
+        fig.tight_layout()
+        st.pyplot(fig, use_container_width=True)
+        plt.close(fig)
 
 with cc:
     fig, ax = make_fig()
@@ -364,11 +451,14 @@ thr  = df["Total"].mean() - df["Total"].std()
 flag = df[mark_cols].lt(60).any(axis=1) | df["Total"].lt(thr)
 df_na = df[flag].sort_values("Total").reset_index(drop=True)
 st.caption(f"{len(df_na)} students flagged — any subject below 60 marks, or total below {thr:.0f}")
-st.dataframe(
-    df_na[["Rank", "Name", "Gender", "English_M", "Lang2_M", "Maths_M", "Science_M", "Social_M", "Total"]]
-    .rename(columns=rename_map),
-    use_container_width=True, hide_index=True
-)
+if df_na.empty:
+    st.success("No students need attention — great class performance! 🎉")
+else:
+    st.dataframe(
+        df_na[["Rank", "Name", "Gender", "English_M", "Lang2_M", "Maths_M", "Science_M", "Social_M", "Total"]]
+        .rename(columns=rename_map),
+        use_container_width=True, hide_index=True
+    )
 
 st.divider()
 
