@@ -38,11 +38,39 @@ def subject_name_from_code(code):
 
 
 def parse(lines_or_path):
+    """
+    Parse CBSE gazette text files.
+
+    Supports two gazette formats:
+      Format A — marks + grade letters on the second line:
+                 e.g.  096 A1  089 B2  066 C1  ...
+      Format B — marks only on the second line (no grade letters):
+                 e.g.  096    089    066    063    081
+
+    Auto-detects the format from the first marks line found.
+    Grade letters are left empty ("") for Format B files.
+    """
     if isinstance(lines_or_path, str):
         with open(lines_or_path, "r", encoding="utf-8", errors="ignore") as f:
             lines = f.read().splitlines()
     else:
         lines = lines_or_path
+
+    # ── Auto-detect format ──────────────────────────────────────────────────
+    # Format A: marks line has "096 A1  089 B2" (digit + space + grade letter+digit)
+    # Format B: marks line has "096    089    066" (digits only)
+    # Use \b\d{2,3}\s+[A-F]\d\b to avoid false match on "026    C.B.S.E." in header.
+    GRADE_PAT = re.compile(r"\b\d{2,3}\s+[A-F]\d\b")
+    fmt_b = True   # default: marks-only (Format B)
+    for line in lines:
+        if re.match(r"\s*\d{8}", line):       # student header line — skip
+            continue
+        if GRADE_PAT.search(line):
+            fmt_b = False   # grade letters present → Format A
+            break
+        if re.match(r"\s{10,}\d{2,3}\s", line):  # indented marks-only line
+            fmt_b = True    # numbers only → Format B
+            break
 
     records = []
     i = 0
@@ -57,34 +85,47 @@ def parse(lines_or_path):
             codes  = re.findall(r"\d{3}", m.group(4))
             result = m.group(5)
 
-            # Advance to the marks+grades line
+            # ── Advance to the marks line (skip blank lines only) ────────────
             j = i + 1
-            while j < len(lines) and not re.search(r"\d{2,3}\s+[A-F]\d?", lines[j]):
+            while j < len(lines) and lines[j].strip() == "":
                 j += 1
-            mg = re.findall(r"(\d{1,3})\s+([A-F]\d?)", lines[j]) if j < len(lines) else []
 
-            # ── Determine 2nd-language name ──────────────────────────────────
-            # codes[1] is always Lang2; codes[2] is Maths OR Painting (241)
+            marks_line = lines[j] if j < len(lines) else ""
+            # Safety: don't consume another student's header line
+            is_marks_line = (
+                re.match(r"\s+\d{2,3}", marks_line)
+                and not re.match(r"\d{8}", marks_line.strip())
+            )
+
+            if fmt_b:
+                # Format B: extract bare numbers
+                marks  = re.findall(r"\b(\d{2,3})\b", marks_line) if is_marks_line else []
+                grades = [""] * len(marks)
+            else:
+                # Format A: extract (mark, grade) pairs
+                pairs  = re.findall(r"(\d{1,3})\s+([A-F]\d?)", marks_line) if is_marks_line else []
+                marks  = [p[0] for p in pairs]
+                grades = [p[1] for p in pairs]
+
+            # ── Identify subject roles ───────────────────────────────────────
             lang2_code = codes[1] if len(codes) > 1 else ""
             maths_code = codes[2] if len(codes) > 2 else ""
 
             rec = {
-                "Roll":       roll,
-                "Name":       name,
-                "Gender":     gender,
-                "Result":     result,
-                "Lang2_Name": subject_name_from_code(lang2_code),
-                "Has_Painting": maths_code == "241",   # flag for painting students
+                "Roll":         roll,
+                "Name":         name,
+                "Gender":       gender,
+                "Result":       result,
+                "Lang2_Name":   subject_name_from_code(lang2_code),
+                "Has_Painting": maths_code == "241",
             }
 
-            # Assign marks positionally (positions 0-4 → English/Lang2/Maths/Science/Social)
-            # Position 2 can be 041 (Maths) or 241 (Painting) — both stored in Maths slot
             for idx, subj in enumerate(SUBJECTS):
-                code = codes[idx] if idx < len(codes) else ""
+                code = codes[idx]  if idx < len(codes)  else ""
                 rec[f"{subj}_Code"] = code
                 rec[f"{subj}_Name"] = subject_name_from_code(code)
-                rec[f"{subj}_M"]    = int(mg[idx][0]) if idx < len(mg) else np.nan
-                rec[f"{subj}_G"]    = mg[idx][1]       if idx < len(mg) else ""
+                rec[f"{subj}_M"]    = int(marks[idx])  if idx < len(marks)  else np.nan
+                rec[f"{subj}_G"]    = grades[idx]       if idx < len(grades) else ""
 
             records.append(rec)
             i = j + 1
@@ -730,7 +771,8 @@ def build_excel(df):
     for i, w in enumerate(widths10, 1):
         col_w(ws10, i, w)
     ws10.freeze_panes = "A4"
-    color_scale(ws10, f"{get_column_letter(n10)}4:{get_column_letter(n10)}{3+len(df_na)}")
+    if len(df_na) > 0:
+        color_scale(ws10, f"{get_column_letter(n10)}4:{get_column_letter(n10)}{3+len(df_na)}")
 
     out = BytesIO()
     wb.save(out)
