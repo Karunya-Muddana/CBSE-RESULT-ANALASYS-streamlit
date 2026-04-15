@@ -4,14 +4,56 @@ import numpy as np
 from io import BytesIO
 
 SUBJECT_CODE_MAP = {
-    "184": "English", "085": "Hindi(B)", "089": "Telugu", "018": "French",
-    "041": "Maths(STD)", "086": "Science", "087": "Social", "049": "Painting",
-    "165": "Computer Applications", "002": "Hindi(A)",
-    "241": "Applied Mathematics",   # Applied Maths code used in Maths slot
+    # ── Core subjects ──────────────────────────────────────────────────────────
+    "184": "English",
+    "086": "Science",
+    "087": "Social Science",
+    "041": "Maths (Standard)",
+    "241": "Maths (Basic)",          # same syllabus as 041, easier paper
+
+    # ── Languages (Group-L) ────────────────────────────────────────────────────
+    "002": "Hindi(A)",    "085": "Hindi(B)",
+    "003": "Urdu(A)",     "004": "Punjabi",     "005": "Bengali",
+    "006": "Tamil",       "007": "Telugu",       "008": "Sindhi",
+    "009": "Marathi",     "010": "Gujarati",     "011": "Manipuri",
+    "012": "Malayalam",   "013": "Odia",         "014": "Assamese",
+    "015": "Kannada",     "016": "Arabic",       "017": "Tibetan",
+    "018": "French",      "020": "German",       "021": "Russian",
+    "023": "Persian",     "024": "Nepali",       "025": "Limboo",
+    "026": "Lepcha",      "089": "Telugu (TG)",  "092": "Bodo",
+    "093": "Tangkhul",    "094": "Japanese",     "095": "Bhutia",
+    "096": "Spanish",
+
+    # ── Academic Electives (Group-A2) ──────────────────────────────────────────
+    "049": "Painting",
+    "064": "Home Science",
+    "076": "NCC",
+    "037": "Psychology",
+    "165": "Computer Applications",
+    "402": "Information Technology",
+    "417": "Artificial Intelligence",
+
+    # ── Music (elective) ───────────────────────────────────────────────────────
+    "031": "Carnatic Music (Vocal)",
+    "032": "Carnatic Music (Mel. Inst.)",
+    "034": "Hindustani Music (Vocal)",
+    "035": "Hindustani Music (Mel. Inst.)",
+    "036": "Hindustani Music (Per. Inst.)",
+
+    # ── Other ──────────────────────────────────────────────────────────────────
+    "090": "Science (Without Practical)",
 }
 
 # Codes that are valid 2nd-language subjects (position index 1)
-LANG2_CODES = {"085", "089", "018", "165", "002", "049"}
+LANG2_CODES = {
+    # Languages
+    "002","003","004","005","006","007","008","009","010","011","012","013",
+    "014","015","016","017","018","020","021","023","024","025","026",
+    "085","089","092","093","094","095","096",
+    # Academic electives that schools place in the Lang2 slot
+    "165","402","417","049","064","076","037",
+    "031","032","034","035","036",
+}
 
 # Codes that are valid Maths-slot subjects (position index 2)
 MATHS_SLOT_CODES = {"041", "241"}
@@ -28,7 +70,7 @@ GRADE_COLORS = {
 
 SUBJECTS     = ["English","Lang2","Maths","Science","Social"]
 SUBJ_LABELS  = {"English":"English","Lang2":"2nd Language",
-                "Maths":"Mathematics / Applied Maths","Science":"Science","Social":"Social Science / Painting"}
+                "Maths":"Mathematics","Science":"Science","Social":"Social Science / Painting"}
 
 
 def subject_name_from_code(code):
@@ -117,7 +159,7 @@ def parse(lines_or_path):
                 "Gender":       gender,
                 "Result":       result,
                 "Lang2_Name":   subject_name_from_code(lang2_code),
-                "Has_AppMaths":  maths_code == "241",
+                "Has_BasicMaths":  maths_code == "241",
                 "Has_PaintSocial": (codes[4] if len(codes) > 4 else "") == "049",
             }
 
@@ -179,7 +221,7 @@ def build_excel(df):
     C_ALTROW  = "EBF3FC"
     C_TEXT    = "1A1A2E"
     C_STRIPE  = "E2ECF7"
-    C_PAINT   = "F4E4C1"   # warm highlight for Applied Maths students
+    C_PAINT   = "F4E4C1"   # warm highlight for Maths (Basic) students
 
     thin  = Side(style="thin",   color="CBD5E0")
     thick = Side(style="medium", color="A0B4C8")
@@ -231,7 +273,7 @@ def build_excel(df):
         ))
 
     # Count painting students for dashboard display
-    painting_count = int(df.get("Has_AppMaths", pd.Series(False)).sum()) if "Has_AppMaths" in df.columns else 0
+    painting_count = int(df.get("Has_BasicMaths", pd.Series(False)).sum()) if "Has_BasicMaths" in df.columns else 0
 
     # ══════════════════════════════════════════════════════════════════════════
     # SHEET 1 — All Students
@@ -263,8 +305,8 @@ def build_excel(df):
     for ri, (_, row) in enumerate(df1.iterrows(), 3):
         ws1.row_dimensions[ri].height = 18
         alt = ri % 2 == 0
-        # Applied Maths students get a warm background tint
-        is_painter = row.get("Has_AppMaths", False)
+        # Maths (Basic) students get a warm background tint
+        is_painter = row.get("Has_BasicMaths", False)
         rbg = C_PAINT if is_painter else (C_ALTROW if alt else C_WHITE)
         for ci, col in enumerate(cols1, 1):
             v = row[col]
@@ -285,7 +327,7 @@ def build_excel(df):
                 cell.font = Font(name="Calibri", bold=True, color=C_WHITE, size=10)
             if col == "Total":
                 cell.font = Font(name="Calibri", bold=True, color=C_DARK, size=11)
-            # Flag Applied Maths subject code cell
+            # Flag Maths (Basic) subject code cell
             if col == "Maths_Code" and v == "241":
                 cell.fill = PatternFill("solid", fgColor="E8A838")
                 cell.font = Font(name="Calibri", bold=True, color=C_WHITE, size=10)
@@ -363,17 +405,17 @@ def build_excel(df):
         s_ser = pd.to_numeric(df[f"{subj}_M"], errors="coerce").dropna()
         a1a2  = df[f"{subj}_G"].isin(["A1","A2"]).sum()
         avg, med, hi, lo, std = _safe_stats(s_ser)
-        # For Maths slot: show split between Maths takers and Applied Maths takers
+        # For Maths slot: show split between Maths takers and Maths (Basic) takers
         if subj == "Maths" and painting_count > 0:
             maths_only = pd.to_numeric(
-                df.loc[~df.get("Has_AppMaths", pd.Series(False)), f"{subj}_M"],
+                df.loc[~df.get("Has_BasicMaths", pd.Series(False)), f"{subj}_M"],
                 errors="coerce"
             ).dropna()
             paint_only = pd.to_numeric(
-                df.loc[df.get("Has_AppMaths", pd.Series(False)), f"{subj}_M"],
+                df.loc[df.get("Has_BasicMaths", pd.Series(False)), f"{subj}_M"],
                 errors="coerce"
             ).dropna()
-            subj_label = f"Maths (n={len(maths_only)}) / Applied Maths (n={len(paint_only)})"
+            subj_label = f"Maths (n={len(maths_only)}) / Maths (Basic) (n={len(paint_only)})"
         else:
             subj_label = SUBJ_LABELS[subj]
 
@@ -429,17 +471,17 @@ def build_excel(df):
         for ci, v in enumerate(vals, 1):
             dat(ws2.cell(ri, ci), v, bg=rbg, bold=(ci == 1), center=(ci != 1))
 
-    # ── Applied Maths vs Maths breakdown ────────────────────────────────────────
+    # ── Maths (Basic) vs Maths breakdown ────────────────────────────────────────
     if painting_count > 0:
         paint_row = 23 + len(lang_list) + 2
-        section_hdr(ws2, paint_row, "  📐   Maths vs Applied Mathematics — Performance Comparison", 6)
+        section_hdr(ws2, paint_row, "  📐   Maths vs Maths (Basic) — Performance Comparison", 6)
         ws2.row_dimensions[paint_row + 1].height = 22
         for ci, h in enumerate(["Group","Students","Avg Marks","Median","Highest","Lowest"], 1):
             hdr(ws2.cell(paint_row + 1, ci), h, bg=C_DARK)
 
         groups = [
-            ("Maths (041)",    ~df["Has_AppMaths"]),
-            ("Applied Maths (241)",  df["Has_AppMaths"]),
+            ("Maths (041)",    ~df["Has_BasicMaths"]),
+            ("Maths (Basic) (241)",  df["Has_BasicMaths"]),
         ]
         for offset, (label, mask) in enumerate(groups):
             ri = paint_row + 2 + offset
@@ -508,7 +550,7 @@ def build_excel(df):
         ws3.row_dimensions[ri].height = 20
         label = SUBJ_LABELS[subj]
         if subj == "Maths" and painting_count > 0:
-            label = f"Maths/Applied Maths ({painting_count}📐)"
+            label = f"Maths/Maths (Basic) ({painting_count}📐)"
         ws3.cell(ri, 1, label).font = Font(name="Calibri", bold=True, size=10, color=C_DARK)
         ws3.cell(ri, 1).alignment = Alignment(horizontal="left", vertical="center")
         ws3.cell(ri, 1).border = brd
@@ -587,7 +629,7 @@ def build_excel(df):
     for ri, (_, row) in enumerate(df4.iterrows(), 3):
         ws4.row_dimensions[ri].height = 18
         rank     = int(row["Rank"])
-        is_paint = row.get("Has_AppMaths", False)
+        is_paint = row.get("Has_BasicMaths", False)
         rbg = {"1":"FFF9E6","2":"F5F5F5","3":"FFF0E6"}.get(
             str(rank), C_PAINT if is_paint else (C_ALTROW if ri%2==0 else C_WHITE)
         )
@@ -605,7 +647,7 @@ def build_excel(df):
             dat(cell, cell.value, bg=rbg, bold=(col=="Total" or rank<=3), center=(ci!=3))
             if col == "Total":
                 cell.font = Font(name="Calibri", bold=True, color=C_DARK, size=11)
-            # Highlight Applied Maths code cell in amber
+            # Highlight Maths (Basic) code cell in amber
             if col == "Maths_Code" and v == "241":
                 cell.fill = PatternFill("solid", fgColor="E8A838")
                 cell.font = Font(name="Calibri", bold=True, color=C_WHITE, size=10)
@@ -638,7 +680,7 @@ def build_excel(df):
             ws.row_dimensions[ri].height = 18
             sr       = ri - 2
             alt      = ri % 2 == 0
-            is_paint = row.get("Has_AppMaths", False) and subj == "Maths"
+            is_paint = row.get("Has_BasicMaths", False) and subj == "Maths"
             rbg = {"1":"FFF9E6","2":"F5F5F5","3":"FFF0E6"}.get(
                 str(sr), C_PAINT if is_paint else (C_ALTROW if alt else C_WHITE)
             )
@@ -682,21 +724,21 @@ def build_excel(df):
             ("A1 + A2 %",      f"{a1a2/len(df)*100:.0f}%" if len(df) else "—"),
         ]
 
-        # For Maths slot — append Applied Maths sub-breakdown
+        # For Maths slot — append Maths (Basic) sub-breakdown
         if subj == "Maths" and painting_count > 0:
             maths_only = pd.to_numeric(
-                df.loc[~df["Has_AppMaths"], "Maths_M"], errors="coerce"
+                df.loc[~df["Has_BasicMaths"], "Maths_M"], errors="coerce"
             ).dropna()
             paint_only = pd.to_numeric(
-                df.loc[df["Has_AppMaths"],  "Maths_M"], errors="coerce"
+                df.loc[df["Has_BasicMaths"],  "Maths_M"], errors="coerce"
             ).dropna()
             m_avg, _, m_hi, m_lo, _ = _safe_stats(maths_only)
             p_avg, _, p_hi, p_lo, _ = _safe_stats(paint_only)
             stats_data += [
                 ("— Maths (041) takers",   int(len(maths_only))),
                 ("  Avg (Maths only)",      m_avg),
-                ("— Applied Maths (241) takers", int(len(paint_only))),
-                ("  Avg (Applied Maths only)",   p_avg),
+                ("— Maths (Basic) (241) takers", int(len(paint_only))),
+                ("  Avg (Maths (Basic) only)",   p_avg),
             ]
 
         for i, (lbl2, v) in enumerate(stats_data, sr2+1):
@@ -752,7 +794,7 @@ def build_excel(df):
 
     for ri, (_, row) in enumerate(df_na.iterrows(), 4):
         ws10.row_dimensions[ri].height = 18
-        is_paint = row.get("Has_AppMaths", False)
+        is_paint = row.get("Has_BasicMaths", False)
         for ci, col in enumerate(na_cols, 1):
             v = row[col]
             if pd.isna(v): v = ""

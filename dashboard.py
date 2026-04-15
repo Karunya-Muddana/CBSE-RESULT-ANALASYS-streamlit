@@ -71,7 +71,7 @@ with st.sidebar:
     top_n    = st.slider("Top / Bottom N", 5, 20, 10)
     show_raw = st.checkbox("Show raw data table", False)
     st.divider()
-    st.caption("Supports Hindi · Telugu · Applied Mathematics options")
+    st.caption("Supports all CBSE language & elective subject codes")
 
 # ══════════════════════════════════════════════════════════════════════════════
 # LANDING
@@ -136,10 +136,10 @@ lang_summary = "  |  ".join(
 st.markdown(lang_summary)
 
 # ── Applied Maths students note ─────────────────────────────────────────────
-if "Has_AppMaths" in df.columns:
-    paint_n = int(df["Has_AppMaths"].sum())
+if "Has_BasicMaths" in df.columns:
+    paint_n = int(df["Has_BasicMaths"].sum())
     if paint_n > 0:
-        st.info(f"📐 **{paint_n} students** opted for Applied Mathematics (code 241) in place of Standard Mathematics.")
+        st.info(f"📐 **{paint_n} students** opted for Maths Basic (code 241) in place of Maths Standard.")
 
 st.divider()
 
