@@ -135,7 +135,10 @@ def parse(lines_or_path):
     df = pd.DataFrame(records)
     mark_cols = [f"{s}_M" for s in SUBJECTS]
     df["Total"] = df[mark_cols].sum(axis=1)
-    df["Rank"]  = df["Total"].rank(method="min", ascending=False).astype(int)
+    # Sort by Total desc, then Name asc to break ties alphabetically,
+    # then assign sequential rank so every student gets a unique position.
+    df = df.sort_values(["Total", "Name"], ascending=[False, True]).reset_index(drop=True)
+    df["Rank"] = range(1, len(df) + 1)
     return df
 
 
