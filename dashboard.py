@@ -71,7 +71,7 @@ with st.sidebar:
     top_n    = st.slider("Top / Bottom N", 5, 20, 10)
     show_raw = st.checkbox("Show raw data table", False)
     st.divider()
-    st.caption("Supports Hindi · Telugu · Painting as 2nd language options")
+    st.caption("Supports Hindi · Telugu · Applied Mathematics options")
 
 # ══════════════════════════════════════════════════════════════════════════════
 # LANDING
@@ -135,11 +135,11 @@ lang_summary = "  |  ".join(
 )
 st.markdown(lang_summary)
 
-# ── Painting students note ────────────────────────────────────────────────────
-if "Has_Painting" in df.columns:
-    paint_n = int(df["Has_Painting"].sum())
+# ── Applied Maths students note ─────────────────────────────────────────────
+if "Has_AppMaths" in df.columns:
+    paint_n = int(df["Has_AppMaths"].sum())
     if paint_n > 0:
-        st.info(f"🎨 **{paint_n} students** opted for Painting (code 241) in place of Mathematics.")
+        st.info(f"📐 **{paint_n} students** opted for Applied Mathematics (code 241) in place of Standard Mathematics.")
 
 st.divider()
 
