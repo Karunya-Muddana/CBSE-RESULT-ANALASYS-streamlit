@@ -131,7 +131,7 @@ k6.metric("Boys",            int((df.Gender == "M").sum()))
 
 # ── Language group summary ────────────────────────────────────────────────────
 lang_summary = "  |  ".join(
-    f"🌐 **{lang}**: {len(g)} students" for lang, g in lang_groups
+    f"🌐 **{lang}**: {len(g)} {'student' if len(g) == 1 else 'students'}" for lang, g in lang_groups
 )
 st.markdown(lang_summary)
 

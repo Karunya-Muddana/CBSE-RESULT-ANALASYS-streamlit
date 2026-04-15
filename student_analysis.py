@@ -11,7 +11,7 @@ SUBJECT_CODE_MAP = {
 }
 
 # Codes that are valid 2nd-language subjects (position index 1)
-LANG2_CODES = {"085", "089", "018", "165", "002"}
+LANG2_CODES = {"085", "089", "018", "165", "002", "049"}
 
 # Codes that are valid Maths-slot subjects (position index 2)
 MATHS_SLOT_CODES = {"041", "241"}
